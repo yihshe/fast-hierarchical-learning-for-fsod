@@ -22,10 +22,11 @@ class DetectionLossProblem(MinimizationProblem):
     def __init__(self, proposals, box_features):
         self.proposals = proposals
         self.box_features = box_features
+        self.loss_dict = None
     def __call__(self, model: GeneralizedRCNN) -> TensorList:
-        loss_dict = model.losses_from_features(self.box_features, self.proposals)
-        losses = sum(loss_dict.values())
-        return TensorList(losses)
+        self.loss_dict = model.losses_from_features(self.box_features, self.proposals)
+        losses = sum(self.loss_dict.values())
+        return TensorList([losses])
 
 class DetectionNewtonCG(ConjugateGradientBase):
     """Newton with Conjugate Gradient. Handels minimization problems in detection."""
@@ -58,7 +59,6 @@ class DetectionNewtonCG(ConjugateGradientBase):
         self.f0 = None
         self.g = None
 
-    # TODO set the num_cg_iter and num_newton_iter
     def run(self, num_cg_iter, num_newton_iter=None):
 
         if isinstance(num_cg_iter, int):
@@ -72,7 +72,6 @@ class DetectionNewtonCG(ConjugateGradientBase):
         if num_newton_iter == 0:
             return
 
-        # TODO related to the data loading, before iterations, should it evaluate the whole dataset or only a batch 
         # in analyze_convergence, it seems that the loss is evaluated only once?
         # if self.analyze_convergence:
         #     self.evaluate_CG_iteration(0)
@@ -81,7 +80,6 @@ class DetectionNewtonCG(ConjugateGradientBase):
             self.run_newton_iter(cg_iter)
             self.hessian_reg *= self.hessian_reg_factor
 
-        # TODO if self.debug, how to load the data properly (eval on whole dataset or on batch?)
         # why here calculate the loss again, duplicate with the last step run_CG
         # if self.debug:
         #     if not self.analyze_convergence:
@@ -94,9 +92,31 @@ class DetectionNewtonCG(ConjugateGradientBase):
         #         if self.analyze_convergence:
         #             plot_graph(self.gradient_mags, self.fig_num[2], 'Gradient magnitude')
 
-        # TODO should the trained model be detached (no_grad) and returned?
         # self.x.detach_()
 
+        self.clear_temp()
+
+        return self.losses, self.residuals
+
+    def before_train(self):
+        """Steps before running Newton iterations"""
+        if self.analyze_convergence:
+            self.evaluate_CG_iteration(0)
+
+    def after_train(self):
+        """Steps after running Newton iterations"""
+        if self.debug:
+            if not self.analyze_convergence:
+                loss = self.problem(self.model)
+                self.losses = torch.cat((self.losses, loss[0].detach().cpu().view(-1)))
+
+            if self.plotting:
+                plot_graph(self.losses, self.fig_num[0], title='Loss')
+                plot_graph(self.residuals, self.fig_num[1], title='CG residuals')
+                if self.analyze_convergence:
+                    plot_graph(self.gradient_mags, self.fig_num[2], 'Gradient magnitude')
+
+        self.x.detach_()
         self.clear_temp()
 
         return self.losses, self.residuals
@@ -105,34 +125,28 @@ class DetectionNewtonCG(ConjugateGradientBase):
 
         assert self.model.training, "[SimpleTrainer] model was changed to eval mode!"
 
-        # TODO check the autograd using TesnsorList datatype
         self.f0 = self.problem(self.model)
-        embed()
+        
+        loss_dict = self.problem.loss_dict
         if self.debug and not self.analyze_convergence:
-            self.losses = torch.cat((self.losses, self.f0.detach().cpu().view(-1)))
+            self.losses = torch.cat((self.losses, self.f0[0].detach().cpu().view(-1)))
         
         # Gradient of loss
         self.g = TensorList(torch.autograd.grad(self.f0, self.model.roi_heads.box_predictor.parameters(), create_graph=True))
-        embed()
         # Get the right hand side
         self.b = - self.g.detach()
 
         # Run CG
         delta_x, res = self.run_CG(num_cg_iter, eps=self.cg_eps)
-        embed()
-        # TODO partially done, check again if this works
+
         self.x.detach_()
         self.x += delta_x
-        embed()
-        # update or modify the weight of the model given the delta_x
 
         if self.debug:
             self.residuals = torch.cat((self.residuals, res))
         
-        # TODO write metrics as in detectron2
-        # self._write_metrics(loss_dict, data_time)
+        return loss_dict
 
-    # TODO check if the calculation is correct, also print the tensor shape in pytracking
     def A(self, x):
         return TensorList(torch.autograd.grad(self.g, self.model.roi_heads.box_predictor.parameters(), x, retain_graph=True)) + self.hessian_reg * x
 
@@ -147,30 +161,18 @@ class DetectionNewtonCG(ConjugateGradientBase):
         return self.problem.M2(x)
 
     def evaluate_CG_iteration(self, delta_x):
-        # TODO load the same data as in Newton iteration
-        # if self.analyze_convergence:
-        #     self.x_eval = (self.x + delta_x).detach()
+        if self.analyze_convergence:
+            updated_weights = (self.x + delta_x).detach()
+            for i in range(len(self.x_eval)):
+                self.x_eval[i][:] = updated_weights[i][:] 
+            # self.x_eval = (self.x + delta_x).detach()
 
-        #     loss = self.problem(self.model_eval)
-        #     grad = TensorList(torch.autograd.grad(loss, self.model_eval.roi_heads.box_predictor.parameters()))
+            loss = self.problem(self.model_eval)
+            grad = TensorList(torch.autograd.grad(loss, self.model_eval.roi_heads.box_predictor.parameters()))
 
-        #     # store in the vectors
-        #     self.losses = torch.cat((self.losses, loss.detach().cpu().view(-1)))
-        #     self.gradient_mags = torch.cat((self.gradient_mags, sum(grad.view(-1) @ grad.view(-1)).cpu().sqrt().detach().view(-1)))
-        pass
-
-    def _write_metrics(
-        self,
-        loss_dict: Dict[str, torch.Tensor],
-        data_time: float,
-        prefix: str = "",
-        ):
-        """
-        Args:
-            loss_dict (dict): dict of scalar losses
-            data_time (float): time taken by the dataloader iteration
-        """
-        pass
+            # store in the vectors
+            self.losses = torch.cat((self.losses, loss[0].detach().cpu().view(-1)))
+            self.gradient_mags = torch.cat((self.gradient_mags, sum(grad.view(-1) @ grad.view(-1)).cpu().sqrt().detach().view(-1)))
 
 
 

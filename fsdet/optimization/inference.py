@@ -46,7 +46,8 @@ from fsdet.data import *
 from fsdet.evaluation import (
     COCOEvaluator, DatasetEvaluators, LVISEvaluator, PascalVOCDetectionEvaluator, verify_results)
 
-
+from typing import Dict, List, Optional
+import numpy as np
 from .optimization import DetectionLossProblem, DetectionNewtonCG
 
 from IPython import embed
@@ -80,10 +81,11 @@ class CGTrainer(TrainerBase):
         model.train()
         self.model=model
         self.data_loader = self.build_train_loader(cfg)
+        self.problem = None
+        self.optimizer = None
 
         # Assume no other objects need to be checkpointed.
         # We can later make it checkpoint the stateful hooks
-
         self.checkpointer = DetectionCheckpointer(
             # Assume you want to save checkpoints together with logs/statistics
             model,
@@ -95,7 +97,7 @@ class CGTrainer(TrainerBase):
         # initialize max_iter: int and num_cg_iter: list
         # self.max_iter = cfg.SOLVER_CG.MAX_ITER
         # self.num_cg_iter = cfg.SOLVER_CG.NUM_CG_ITER
-        self.max_iter = 6
+        self.max_iter = 30
         self.num_cg_iter = 10
         if isinstance(self.num_cg_iter, int):
             assert self.num_cg_iter!=0, "Number of CG iteration is 0!"
@@ -231,22 +233,20 @@ class CGTrainer(TrainerBase):
         with EventStorage(self.start_iter) as self.storage:
             # TODO, add the Newton optimizer argument to cfg, and in tuning mode, change the batch size to 20
             data = next(iter(self.data_loader))
+            torch.cuda.empty_cache()
             proposals, box_features = self.model.extract_features(data)
             logger.info("Extracted features from frozen layers")
-            embed()
             self.problem = DetectionLossProblem(proposals, box_features)
             self.optimizer = self.build_optimizer(self.cfg, self.model, self.problem)
 
             try:
                 self.before_train()
-                # TODO the debug and analyze_convergence model has not been added
+                self.optimizer.before_train()
                 for self.iter in range(self.start_iter, self.max_iter):
                     self.before_step()
-                    # TODO the model of trainer also needs to be updated every newton_iter
                     self.run_step()
+                    print(self.optimizer.f0[0].item())
                     self.after_step()
-                
-                self.optimizer.clear_temp()
 
                 # self.iter == max_iter can be used by `after_train` to
                 # tell whether the training successfully finished or failed
@@ -256,7 +256,10 @@ class CGTrainer(TrainerBase):
                 logger.exception("Exception during training:")
                 raise
             finally:
+                self.optimizer.after_train()
+                embed()
                 self.after_train()
+                
         # TODO also return the losses and residuals as in run()
         if hasattr(self, "_last_eval_results") and comm.is_main_process():
             verify_results(self.cfg, self._last_eval_results)
@@ -264,8 +267,54 @@ class CGTrainer(TrainerBase):
     
     def run_step(self):
         self.cg_iter = self.num_cg_iter[self.iter]
-        self.optimizer.run_newton_iter(self.cg_iter)
+        loss_dict = self.optimizer.run_newton_iter(self.cg_iter)
         self.optimizer.hessian_reg *= self.optimizer.hessian_reg_factor
+        # time needed to load the data is 0 since all features were extracted before training
+        data_time = 0
+
+        self._write_metrics(loss_dict, data_time)
+
+    def _write_metrics(
+        self,
+        loss_dict: Dict[str, torch.Tensor],
+        data_time: float,
+        prefix: str = "",
+        ):
+        """
+        Args:
+            loss_dict (dict): dict of scalar losses
+            data_time (float): time taken by the dataloader iteration
+        """
+        metrics_dict = {k: v.detach().cpu().item() for k, v in loss_dict.items()}
+        metrics_dict["data_time"] = data_time
+
+        # Gather metrics among all workers for logging
+        # This assumes we do DDP-style training, which is currently the only
+        # supported method in detectron2.
+        all_metrics_dict = comm.gather(metrics_dict)
+
+        if comm.is_main_process():
+            storage = get_event_storage()
+
+            # data_time among workers can have high variance. The actual latency
+            # caused by data_time is the maximum among workers.
+            data_time = np.max([x.pop("data_time") for x in all_metrics_dict])
+            storage.put_scalar("data_time", data_time)
+
+            # average the rest metrics
+            metrics_dict = {
+                k: np.mean([x[k] for x in all_metrics_dict]) for k in all_metrics_dict[0].keys()
+            }
+            total_losses_reduced = sum(metrics_dict.values())
+            if not np.isfinite(total_losses_reduced):
+                raise FloatingPointError(
+                    f"Loss became infinite or NaN at iteration={self.iter}!\n"
+                    f"loss_dict = {metrics_dict}"
+                )
+
+            storage.put_scalar("{}total_loss".format(prefix), total_losses_reduced)
+            if len(metrics_dict) > 1:
+                storage.put_scalars(**metrics_dict)
 
     @classmethod
     def build_model(cls, cfg):
@@ -293,7 +342,7 @@ class CGTrainer(TrainerBase):
         """
         # TODO more args to be passed to the optimizer
         # return build_optimizer(cfg, model)
-        return DetectionNewtonCG(problem, model)
+        return DetectionNewtonCG(problem, model, debug=1, analyze=True, plotting=True)
 
     @classmethod
     def build_lr_scheduler(cls, cfg, optimizer):
