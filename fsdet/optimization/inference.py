@@ -97,7 +97,7 @@ class CGTrainer(TrainerBase):
         # initialize max_iter: int and num_cg_iter: list
         # self.max_iter = cfg.SOLVER_CG.MAX_ITER
         # self.num_cg_iter = cfg.SOLVER_CG.NUM_CG_ITER
-        self.max_iter = 30
+        self.max_iter = 4000
         self.num_cg_iter = 10
         if isinstance(self.num_cg_iter, int):
             assert self.num_cg_iter!=0, "Number of CG iteration is 0!"
@@ -245,7 +245,6 @@ class CGTrainer(TrainerBase):
                 for self.iter in range(self.start_iter, self.max_iter):
                     self.before_step()
                     self.run_step()
-                    print(self.optimizer.f0[0].item())
                     self.after_step()
 
                 # self.iter == max_iter can be used by `after_train` to
@@ -257,7 +256,6 @@ class CGTrainer(TrainerBase):
                 raise
             finally:
                 self.optimizer.after_train()
-                embed()
                 self.after_train()
                 
         # TODO also return the losses and residuals as in run()
@@ -269,9 +267,9 @@ class CGTrainer(TrainerBase):
         self.cg_iter = self.num_cg_iter[self.iter]
         loss_dict = self.optimizer.run_newton_iter(self.cg_iter)
         self.optimizer.hessian_reg *= self.optimizer.hessian_reg_factor
+
         # time needed to load the data is 0 since all features were extracted before training
         data_time = 0
-
         self._write_metrics(loss_dict, data_time)
 
     def _write_metrics(

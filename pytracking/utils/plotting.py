@@ -56,6 +56,9 @@ def plot_graph(a: torch.Tensor, fig_num = None, title = None):
     if title is not None:
         plt.title(title)
     draw_figure(fig)
+    
+    # set temp path
+    plt.savefig("checkpoints_temp/CG_figs/{}.png".format(title))
 
 
 def show_image_with_boxes(im, boxes, iou_pred=None, disp_ids=None):

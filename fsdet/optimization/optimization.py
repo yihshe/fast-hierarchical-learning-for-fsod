@@ -38,8 +38,12 @@ class DetectionNewtonCG(ConjugateGradientBase):
         self.problem = problem
         self.model = model
         self.model_eval = copy.deepcopy(model)
-        self.x = TensorList([p.detach() for p in self.model.roi_heads.box_predictor.parameters()])
-        self.x_eval = TensorList([p.detach() for p in self.model_eval.roi_heads.box_predictor.parameters()])
+        self.state_dict = self.model.roi_heads.box_predictor.state_dict()
+        self.layer_names = list(self.state_dict.keys())
+        self.x = TensorList([self.state_dict[k].detach().clone() for k in self.state_dict.keys()])
+        self.x_eval = TensorList([self.state_dict[k].detach().clone() for k in self.state_dict.keys()])
+        # self.x = TensorList([p.detach().clone() for p in self.model.roi_heads.box_predictor.parameters()])
+        # self.x_eval = TensorList([p.detach().clone() for p in self.model_eval.roi_heads.box_predictor.parameters()])
 
         self.analyze_convergence = analyze
         self.plotting = plotting
@@ -124,7 +128,7 @@ class DetectionNewtonCG(ConjugateGradientBase):
     def run_newton_iter(self, num_cg_iter):
 
         assert self.model.training, "[SimpleTrainer] model was changed to eval mode!"
-
+        # TODO the weight of the model get changed here
         self.f0 = self.problem(self.model)
         
         loss_dict = self.problem.loss_dict
@@ -135,12 +139,12 @@ class DetectionNewtonCG(ConjugateGradientBase):
         self.g = TensorList(torch.autograd.grad(self.f0, self.model.roi_heads.box_predictor.parameters(), create_graph=True))
         # Get the right hand side
         self.b = - self.g.detach()
-
         # Run CG
         delta_x, res = self.run_CG(num_cg_iter, eps=self.cg_eps)
-
         self.x.detach_()
         self.x += delta_x
+
+        self.model_update()
 
         if self.debug:
             self.residuals = torch.cat((self.residuals, res))
@@ -162,18 +166,29 @@ class DetectionNewtonCG(ConjugateGradientBase):
 
     def evaluate_CG_iteration(self, delta_x):
         if self.analyze_convergence:
-            updated_weights = (self.x + delta_x).detach()
-            for i in range(len(self.x_eval)):
-                self.x_eval[i][:] = updated_weights[i][:] 
-            # self.x_eval = (self.x + delta_x).detach()
-
+            self.x_eval = (self.x + delta_x).detach()
+            self.model_update(eval=True)
             loss = self.problem(self.model_eval)
             grad = TensorList(torch.autograd.grad(loss, self.model_eval.roi_heads.box_predictor.parameters()))
+            # loss = self.problem(self.model)
+            # grad = TensorList(torch.autograd.grad(loss, self.model.roi_heads.box_predictor.parameters()))
 
             # store in the vectors
             self.losses = torch.cat((self.losses, loss[0].detach().cpu().view(-1)))
             self.gradient_mags = torch.cat((self.gradient_mags, sum(grad.view(-1) @ grad.view(-1)).cpu().sqrt().detach().view(-1)))
 
+    def model_update(self, eval=False):
+        if eval: 
+            for i in range(len(self.layer_names)):
+                self.state_dict[self.layer_names[i]] = self.x_eval[i].detach()
+            self.model_eval.roi_heads.box_predictor.load_state_dict(self.state_dict)
+        else:
+            for i in range(len(self.layer_names)):
+                self.state_dict[self.layer_names[i]] = self.x[i].detach()
+            self.model.roi_heads.box_predictor.load_state_dict(self.state_dict)            
+
+
+        
 
 
 
