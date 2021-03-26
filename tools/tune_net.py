@@ -32,7 +32,7 @@ import time
 from IPython import embed
 
 from fsdet.optimization import CGTrainer
-    
+         
 def setup(args):
     """
     Create configs and perform basic setups.

@@ -13,7 +13,7 @@ from torch.nn.parallel import DistributedDataParallel
 
 import detectron2.data.transforms as T
 from fsdet.checkpoint import DetectionCheckpointer
-from fsdet.engine.hooks import EvalHookFsdet
+from fsdet.engine.hooks import EvalHookFsdet, PeriodicWriterFsdet
 from fsdet.evaluation import (
     DatasetEvaluator,
     inference_on_dataset,
@@ -21,10 +21,11 @@ from fsdet.evaluation import (
     verify_results,
 )
 from fsdet.modeling import build_model
+from fsdet.data import build_detection_train_loader
 from detectron2.data import (
     MetadataCatalog,
     build_detection_test_loader,
-    build_detection_train_loader,
+    # build_detection_train_loader,
 )
 from detectron2.engine import hooks, SimpleTrainer, TrainerBase
 from detectron2.solver import build_lr_scheduler, build_optimizer
@@ -95,10 +96,8 @@ class CGTrainer(TrainerBase):
         self.start_iter = 0
         # TODO, add the num_cg_iter in configuration SOLVER_CG
         # initialize max_iter: int and num_cg_iter: list
-        # self.max_iter = cfg.SOLVER_CG.MAX_ITER
-        # self.num_cg_iter = cfg.SOLVER_CG.NUM_CG_ITER
-        self.max_iter = 4000
-        self.num_cg_iter = 10
+        self.max_iter = cfg.CG_PARAMS.NUM_NEWTON_ITER
+        self.num_cg_iter = cfg.CG_PARAMS.NUM_CG_ITER
         if isinstance(self.num_cg_iter, int):
             assert self.num_cg_iter!=0, "Number of CG iteration is 0!"
             if self.max_iter is None:
@@ -183,7 +182,8 @@ class CGTrainer(TrainerBase):
 
         if comm.is_main_process():
             # run writers in the end, so that evaluation metrics are written
-            ret.append(hooks.PeriodicWriter(self.build_writers()))
+            # ret.append(hooks.PeriodicWriter(self.build_writers()))
+            ret.append(PeriodicWriterFsdet(self.build_writers()))
         return ret
 
     def build_writers(self):
@@ -231,11 +231,9 @@ class CGTrainer(TrainerBase):
         self.iter = self.start_iter 
 
         with EventStorage(self.start_iter) as self.storage:
-            # TODO, add the Newton optimizer argument to cfg, and in tuning mode, change the batch size to 20
-            data = next(iter(self.data_loader))
-            torch.cuda.empty_cache()
-            proposals, box_features = self.model.extract_features(data)
+            proposals, box_features = self.extract_features()
             logger.info("Extracted features from frozen layers")
+            
             self.problem = DetectionLossProblem(proposals, box_features)
             self.optimizer = self.build_optimizer(self.cfg, self.model, self.problem)
 
@@ -255,6 +253,7 @@ class CGTrainer(TrainerBase):
                 logger.exception("Exception during training:")
                 raise
             finally:
+                # the losses and residuals returned by optimizer can be saved in debug mode
                 self.optimizer.after_train()
                 self.after_train()
                 
@@ -263,6 +262,16 @@ class CGTrainer(TrainerBase):
             verify_results(self.cfg, self._last_eval_results)
             return self._last_eval_results
     
+    def extract_features(self):
+        for batch_idx, data in enumerate(self.data_loader):
+            if batch_idx == 0:
+                proposals, box_features = self.model.extract_features(data)
+            else:
+                proposals_batch, box_features_batch = self.model.extract_features(data)
+                proposals = [*proposals, *proposals_batch]
+                box_features = torch.cat((box_features, box_features_batch), dim=0)
+        return proposals, box_features
+
     def run_step(self):
         self.cg_iter = self.num_cg_iter[self.iter]
         loss_dict = self.optimizer.run_newton_iter(self.cg_iter)
@@ -340,7 +349,10 @@ class CGTrainer(TrainerBase):
         """
         # TODO more args to be passed to the optimizer
         # return build_optimizer(cfg, model)
-        return DetectionNewtonCG(problem, model, debug=1, analyze=True, plotting=True)
+        return DetectionNewtonCG(problem, model, 
+        debug= cfg.CG_PARAMS.DEBUG, 
+        analyze=cfg.CG_PARAMS.ANALYZE_CONVERGENCE, 
+        plotting=cfg.CG_PARAMS.PLOTTING)
 
     @classmethod
     def build_lr_scheduler(cls, cfg, optimizer):

@@ -10,7 +10,9 @@ from detectron2.config import global_cfg
 from detectron2.engine.train_loop import HookBase
 from detectron2.evaluation.testing import flatten_results_dict
 
-__all__ = ["EvalHookFsdet"]
+from detectron2.engine.hooks import PeriodicWriter
+
+__all__ = ["EvalHookFsdet", "PeriodicWriterFsdet"]
 
 
 class EvalHookFsdet(HookBase):
@@ -82,3 +84,12 @@ class EvalHookFsdet(HookBase):
         # func is likely a closure that holds reference to the trainer
         # therefore we clean it to avoid circular reference in the end
         del self._func
+
+class PeriodicWriterFsdet(PeriodicWriter):
+    # now the loss_dict of the initial model will also be written in logs.
+    def after_step(self):
+        if self.trainer.iter == 0 or (self.trainer.iter + 1) % self._period == 0 or (
+            self.trainer.iter == self.trainer.max_iter - 1
+        ):
+            for writer in self._writers:
+                writer.write()

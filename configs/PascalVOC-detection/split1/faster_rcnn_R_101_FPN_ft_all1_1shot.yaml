@@ -19,15 +19,10 @@ DATASETS:
   TRAIN: ('voc_2007_trainval_all1_1shot',)
   TEST: ('voc_2007_test_all1',)
 SOLVER:
-  # IMS_PER_BATCH: 16
   IMS_PER_BATCH: 16
   BASE_LR: 0.001
   STEPS: (3000,)
   MAX_ITER: 4000
   CHECKPOINT_PERIOD: 500
-  WARMUP_ITERS: 0
-# Change the default value for data loader
-DATALOADER:
-  ASPECT_RATIO_GROUPING: false
-# OUTPUT_DIR: "checkpoints/voc/faster_rcnn/faster_rcnn_R_101_FPN_ft_normalized_all1_1shot_randnovel"
-OUTPUT_DIR: "checkpoints_temp/CG_L2/voc/faster_rcnn/faster_rcnn_R_101_FPN_ft_normalized_all1_1shot_randnovel"
+  WARMUP_ITERS: 0s
+OUTPUT_DIR: "checkpoints/voc/faster_rcnn/faster_rcnn_R_101_FPN_ft_normalized_all1_1shot_randnovel"

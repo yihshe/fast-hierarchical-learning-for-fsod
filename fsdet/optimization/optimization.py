@@ -126,11 +126,9 @@ class DetectionNewtonCG(ConjugateGradientBase):
         return self.losses, self.residuals
 
     def run_newton_iter(self, num_cg_iter):
-
         assert self.model.training, "[SimpleTrainer] model was changed to eval mode!"
-        # TODO the weight of the model get changed here
+        # TODO weight of the model changed after calling self.problem
         self.f0 = self.problem(self.model)
-        
         loss_dict = self.problem.loss_dict
         if self.debug and not self.analyze_convergence:
             self.losses = torch.cat((self.losses, self.f0[0].detach().cpu().view(-1)))
