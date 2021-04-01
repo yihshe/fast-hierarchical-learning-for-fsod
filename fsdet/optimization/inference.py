@@ -127,6 +127,9 @@ class CGTrainer(TrainerBase):
             ).get("iteration", -1)
             + 1
         )
+        if not resume:
+            self.start_iter = 0
+
 
     # TODO all hooks here requires the after_step(), which is now wrapped in NewtonCG
     def build_hooks(self):
@@ -233,7 +236,12 @@ class CGTrainer(TrainerBase):
         with EventStorage(self.start_iter) as self.storage:
             proposals, box_features = self.extract_features()
             logger.info("Extracted features from frozen layers")
-            
+
+            # torch.save(proposals, 'checkpoints_temp/proposals.pt')
+            # torch.save(box_features, 'checkpoints_temp/box_features.pt')
+            # proposals = torch.load('checkpoints_temp/proposals.pt')
+            # box_features = torch.load('checkpoints_temp/box_features.pt')
+
             self.problem = DetectionLossProblem(proposals, box_features)
             self.optimizer = self.build_optimizer(self.cfg, self.model, self.problem)
 
@@ -371,16 +379,17 @@ class CGTrainer(TrainerBase):
         It now calls :func:`fsdet.data.build_detection_train_loader`.
         Overwrite it if you'd like a different data loader.
         """
-        dataset = get_detection_dataset_dicts(
-            cfg.DATASETS.TRAIN,
-            filter_empty=cfg.DATALOADER.FILTER_EMPTY_ANNOTATIONS,
-            min_keypoints=cfg.MODEL.ROI_KEYPOINT_HEAD.MIN_KEYPOINTS_PER_IMAGE
-            if cfg.MODEL.KEYPOINT_ON
-            else 0,
-            proposal_files=cfg.DATASETS.PROPOSAL_FILES_TRAIN if cfg.MODEL.LOAD_PROPOSALS else None,
-        )
-        sampler = SequentialSampler(dataset)
-        return build_detection_train_loader(cfg, dataset=dataset, sampler=sampler)
+        # dataset = get_detection_dataset_dicts(
+        #     cfg.DATASETS.TRAIN,
+        #     filter_empty=cfg.DATALOADER.FILTER_EMPTY_ANNOTATIONS,
+        #     min_keypoints=cfg.MODEL.ROI_KEYPOINT_HEAD.MIN_KEYPOINTS_PER_IMAGE
+        #     if cfg.MODEL.KEYPOINT_ON
+        #     else 0,
+        #     proposal_files=cfg.DATASETS.PROPOSAL_FILES_TRAIN if cfg.MODEL.LOAD_PROPOSALS else None,
+        # )
+        # sampler = SequentialSampler(dataset)
+        # return build_detection_train_loader(cfg, dataset=dataset, sampler=sampler)
+        return build_detection_train_loader(cfg, extract_features=True)
 
     @classmethod
     def build_test_loader(cls, cfg, dataset_name):

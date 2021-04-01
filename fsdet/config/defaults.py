@@ -18,6 +18,9 @@ _CC.MODEL.ROI_HEADS.COSINE_SCALE = 20.0
 # Backward Compatible options.
 _CC.MUTE_HEADER = True
 
+# Set the batch size for feature extraction
+_CC.SOLVER.IMS_PER_BATCH_FEAT_EXTRACT = 10
+
 # CG parameters
 _CC.CG_PARAMS = CN()
 _CC.CG_PARAMS.NUM_NEWTON_ITER = 100

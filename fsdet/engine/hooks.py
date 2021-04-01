@@ -11,6 +11,7 @@ from detectron2.engine.train_loop import HookBase
 from detectron2.evaluation.testing import flatten_results_dict
 
 from detectron2.engine.hooks import PeriodicWriter
+from IPython import embed
 
 __all__ = ["EvalHookFsdet", "PeriodicWriterFsdet"]
 
@@ -90,6 +91,6 @@ class PeriodicWriterFsdet(PeriodicWriter):
     def after_step(self):
         if self.trainer.iter == 0 or (self.trainer.iter + 1) % self._period == 0 or (
             self.trainer.iter == self.trainer.max_iter - 1
-        ):
+            ):
             for writer in self._writers:
                 writer.write()

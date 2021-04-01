@@ -24,5 +24,8 @@ SOLVER:
   STEPS: (3000,)
   MAX_ITER: 4000
   CHECKPOINT_PERIOD: 500
-  WARMUP_ITERS: 0s
-OUTPUT_DIR: "checkpoints/voc/faster_rcnn/faster_rcnn_R_101_FPN_ft_normalized_all1_1shot_randnovel"
+  WARMUP_ITERS: 0
+# set ratio_grouping to false only when loading batches from extracted features
+DATALOADER:
+  ASPECT_RATIO_GROUPING: False
+OUTPUT_DIR: "checkpoints_temp/SGD_L2_modified/exp_0/voc/faster_rcnn/faster_rcnn_R_101_FPN_ft_normalized_all1_1shot_randnovel"

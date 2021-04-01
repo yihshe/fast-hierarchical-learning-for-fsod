@@ -17,7 +17,7 @@ from torch.nn.parallel import DistributedDataParallel
 
 import detectron2.data.transforms as T
 from fsdet.checkpoint import DetectionCheckpointer
-from fsdet.engine.hooks import EvalHookFsdet
+from fsdet.engine.hooks import EvalHookFsdet, PeriodicWriterFsdet
 from fsdet.evaluation import (
     DatasetEvaluator,
     inference_on_dataset,
@@ -351,6 +351,9 @@ class DefaultTrainer(SimpleTrainer):
             + 1
         )
 
+        if not resume:
+            self.start_iter = 0
+
     def build_hooks(self):
         """
         Build a list of default hooks, including timing, evaluation,
@@ -402,7 +405,8 @@ class DefaultTrainer(SimpleTrainer):
 
         if comm.is_main_process():
             # run writers in the end, so that evaluation metrics are written
-            ret.append(hooks.PeriodicWriter(self.build_writers()))
+            # ret.append(hooks.PeriodicWriter(self.build_writers()))
+            ret.append(PeriodicWriterFsdet(self.build_writers()))
         return ret
 
     def build_writers(self):

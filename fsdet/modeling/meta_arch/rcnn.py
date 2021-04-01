@@ -12,6 +12,7 @@ from detectron2.utils.logger import log_first_n
 
 # avoid conflicting with the existing GeneralizedRCNN module in Detectron2
 from .build import META_ARCH_REGISTRY
+from IPython import embed
 
 __all__ = ["GeneralizedRCNN", "ProposalNetwork"]
 
@@ -251,7 +252,7 @@ class GeneralizedRCNN(nn.Module):
                 x["proposals"].to(self.device) for x in batched_inputs
             ]
             proposal_losses = {}
-
+            
         proposals, box_features = self.roi_heads.extract_features(
             images, features, proposals, gt_instances
         )
