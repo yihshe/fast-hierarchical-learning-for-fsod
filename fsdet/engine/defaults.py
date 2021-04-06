@@ -25,11 +25,15 @@ from fsdet.evaluation import (
     verify_results,
 )
 from fsdet.modeling import build_model
+# the following two packages must be loaded in this order
+# so that the package of detectron2 can overwrite the one of fsdet
+from fsdet.data import *
 from detectron2.data import (
     MetadataCatalog,
     build_detection_test_loader,
     build_detection_train_loader,
 )
+
 from detectron2.engine import hooks, SimpleTrainer
 from detectron2.solver import build_lr_scheduler, build_optimizer
 from detectron2.utils import comm
@@ -42,9 +46,6 @@ from detectron2.utils.events import (
 )
 
 from detectron2.utils.logger import setup_logger
-
-
-from fsdet.data import *
 
 __all__ = [
     "default_argument_parser",

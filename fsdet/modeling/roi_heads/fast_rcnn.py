@@ -227,6 +227,7 @@ class FastRCNNOutputs(object):
             scalar Tensor
         """
         self._log_accuracy()
+        # embed()
         return F.cross_entropy(
             self.pred_class_logits, self.gt_classes, reduction="mean"
         )

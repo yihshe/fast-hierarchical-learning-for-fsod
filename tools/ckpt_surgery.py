@@ -3,6 +3,7 @@ import torch
 import argparse
 import os
 
+from IPython import embed
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -51,6 +52,7 @@ def ckpt_surgery(args):
         weight_name = param_name + ('.weight' if is_weight else '.bias')
         pretrained_weight = ckpt['model'][weight_name]
         prev_cls = pretrained_weight.size(0)
+        # initialize the new weights
         if 'cls_score' in param_name:
             prev_cls -= 1
         if is_weight:
@@ -59,6 +61,7 @@ def ckpt_surgery(args):
             torch.nn.init.normal_(new_weight, 0, 0.01)
         else:
             new_weight = torch.zeros(tar_size)
+        # overwrite the new weights with corresponding pretrained weights
         if args.coco or args.lvis:
             for i, c in enumerate(BASE_CLASSES):
                 idx = i if args.coco else c
@@ -71,6 +74,7 @@ def ckpt_surgery(args):
             new_weight[:prev_cls] = pretrained_weight[:prev_cls]
         if 'cls_score' in param_name:
             new_weight[-1] = pretrained_weight[-1]  # bg class
+            
         ckpt['model'][weight_name] = new_weight
 
     surgery_loop(args, surgery)

@@ -3,6 +3,7 @@ import torch.autograd
 import math
 from pytracking.libs import TensorList
 from pytracking.utils.plotting import plot_graph
+from IPython.terminal.embed import embed
 # from ltr.models.layers.activation import softmax_reg
 
 
@@ -156,7 +157,6 @@ class ConjugateGradientBase:
                 if self.debug:
                     print('Stopped CG since norm smaller than eps')
                 break
-
         if resvec is not None:
             resvec = resvec[:ii+2]
 

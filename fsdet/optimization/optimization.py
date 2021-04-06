@@ -30,7 +30,7 @@ class DetectionLossProblem(MinimizationProblem):
 
 class DetectionNewtonCG(ConjugateGradientBase):
     """Newton with Conjugate Gradient. Handels minimization problems in detection."""
-    def __init__(self, problem: DetectionLossProblem, model: GeneralizedRCNN, init_hessian_reg = 0.0, hessian_reg_factor = 1.0,
+    def __init__(self, problem: DetectionLossProblem, model: GeneralizedRCNN, mask = None, init_hessian_reg = 0.0, hessian_reg_factor = 1.0,
                  cg_eps = 0.0, fletcher_reeves = True, standard_alpha = True, direction_forget_factor = 0,
                  debug = False, analyze = False, plotting = False, fig_num=(10, 11, 12)):
         super().__init__(fletcher_reeves, standard_alpha, direction_forget_factor, debug or analyze or plotting)
@@ -44,6 +44,8 @@ class DetectionNewtonCG(ConjugateGradientBase):
         self.x_eval = TensorList([self.state_dict[k].detach().clone() for k in self.state_dict.keys()])
         # self.x = TensorList([p.detach().clone() for p in self.model.roi_heads.box_predictor.parameters()])
         # self.x_eval = TensorList([p.detach().clone() for p in self.model_eval.roi_heads.box_predictor.parameters()])
+        if mask is not None:
+            self.mask = TensorList(mask) 
 
         self.analyze_convergence = analyze
         self.plotting = plotting
@@ -135,14 +137,19 @@ class DetectionNewtonCG(ConjugateGradientBase):
         
         # Gradient of loss
         self.g = TensorList(torch.autograd.grad(self.f0, self.model.roi_heads.box_predictor.parameters(), create_graph=True))
+        # self.g *= self.mask
+
         # Get the right hand side
         self.b = - self.g.detach()
         # Run CG
         delta_x, res = self.run_CG(num_cg_iter, eps=self.cg_eps)
+
+        # mask out the gradient for the params of base classes
         self.x.detach_()
         self.x += delta_x
-
+        # self.x += delta_x*self.mask
         self.model_update()
+        # print('update: {}'.format(self.f0.item()))
 
         if self.debug:
             self.residuals = torch.cat((self.residuals, res))
@@ -151,6 +158,8 @@ class DetectionNewtonCG(ConjugateGradientBase):
 
     def A(self, x):
         return TensorList(torch.autograd.grad(self.g, self.model.roi_heads.box_predictor.parameters(), x, retain_graph=True)) + self.hessian_reg * x
+        # second_order_grad = TensorList(torch.autograd.grad(self.g, self.model.roi_heads.box_predictor.parameters(), x, retain_graph=True)) + self.hessian_reg * x
+        # return second_order_grad*self.mask
 
     def ip(self, a, b):
         # Implements the inner product
@@ -164,13 +173,13 @@ class DetectionNewtonCG(ConjugateGradientBase):
 
     def evaluate_CG_iteration(self, delta_x):
         if self.analyze_convergence:
+            # mask out the gradient for the paramters of base classes
+            # self.x_eval = (self.x + delta_x*self.mask).detach()
             self.x_eval = (self.x + delta_x).detach()
             self.model_update(eval=True)
             loss = self.problem(self.model_eval)
             grad = TensorList(torch.autograd.grad(loss, self.model_eval.roi_heads.box_predictor.parameters()))
-            # loss = self.problem(self.model)
-            # grad = TensorList(torch.autograd.grad(loss, self.model.roi_heads.box_predictor.parameters()))
-
+            
             # store in the vectors
             self.losses = torch.cat((self.losses, loss[0].detach().cpu().view(-1)))
             self.gradient_mags = torch.cat((self.gradient_mags, sum(grad.view(-1) @ grad.view(-1)).cpu().sqrt().detach().view(-1)))

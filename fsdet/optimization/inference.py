@@ -50,6 +50,7 @@ from fsdet.evaluation import (
 from typing import Dict, List, Optional
 import numpy as np
 from .optimization import DetectionLossProblem, DetectionNewtonCG
+from .gradient_mask import GradientMask
 
 from IPython import embed
 
@@ -84,6 +85,12 @@ class CGTrainer(TrainerBase):
         self.data_loader = self.build_train_loader(cfg)
         self.problem = None
         self.optimizer = None
+        
+        # define variables used for masking out gradients for pretrained weights
+        data_source = cfg.DATASETS.TRAIN[0].split('_')[0]
+        base_model = torch.load(cfg.MODEL.PRETRAINED_BASE_MODEL)
+        mask_generator = GradientMask(data_source)
+        self.mask = mask_generator.create_mask(self.model.state_dict(), base_model['model'])
 
         # Assume no other objects need to be checkpointed.
         # We can later make it checkpoint the stateful hooks
@@ -243,7 +250,7 @@ class CGTrainer(TrainerBase):
             # box_features = torch.load('checkpoints_temp/box_features.pt')
 
             self.problem = DetectionLossProblem(proposals, box_features)
-            self.optimizer = self.build_optimizer(self.cfg, self.model, self.problem)
+            self.optimizer = self.build_optimizer(self.cfg, self.model, self.problem, self.mask)
 
             try:
                 self.before_train()
@@ -347,7 +354,7 @@ class CGTrainer(TrainerBase):
         return model
 
     @classmethod
-    def build_optimizer(cls, cfg, model, problem):
+    def build_optimizer(cls, cfg, model, problem, mask):
         """
         Returns:
             DetectionNewtonCG optimizer:
@@ -357,7 +364,7 @@ class CGTrainer(TrainerBase):
         """
         # TODO more args to be passed to the optimizer
         # return build_optimizer(cfg, model)
-        return DetectionNewtonCG(problem, model, 
+        return DetectionNewtonCG(problem, model, mask,
         debug= cfg.CG_PARAMS.DEBUG, 
         analyze=cfg.CG_PARAMS.ANALYZE_CONVERGENCE, 
         plotting=cfg.CG_PARAMS.PLOTTING)

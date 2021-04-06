@@ -24,19 +24,6 @@ from detectron2.data import MetadataCatalog
 from detectron2.engine import launch
 from fsdet.evaluation import (
     COCOEvaluator, DatasetEvaluators, LVISEvaluator, PascalVOCDetectionEvaluator, verify_results)
-from fsdet.data import build_detection_train_loader, ExtractedDataset
-
-from detectron2.solver import get_default_optimizer_params
-import torch 
-import time
-
-from IPython import embed
-from detectron2.utils.events import EventStorage
-from torch.nn.parallel.distributed import DistributedDataParallel
-import logging
-# The train_net.py has been modified according to this project. 
-# To use the original one, please download a separate file.
-
 
 class Trainer(DefaultTrainer):
     """
@@ -45,77 +32,6 @@ class Trainer(DefaultTrainer):
     are working on a new research project. In that case you can use the cleaner
     "SimpleTrainer", or write your own training loop.
     """
-    def __init__(self, cfg):
-        """
-        Args:
-            cfg (CfgNode):
-        """
-        super().__init__(cfg)
-        self.data_loader_before = None
-        self.data_loader_after = None
-        self.dataset = None
-
-    def train(self):
-        """
-        Args:
-            start_iter, max_iter (int): See docs above
-        """
-        logger = logging.getLogger(__name__)
-        logger.info("Starting training from iteration {}".format(self.start_iter))
-
-        self.iter = self.start_iter
-
-        with EventStorage(self.start_iter) as self.storage:
-            self.data_loader_before = self.build_train_loader_feature(self.cfg, extract_features=True)
-            proposals, box_features = self.extract_features(self.model, self.data_loader_before)
-            logger.info("Extracted features from frozen layers")
-
-            self.dataset = ExtractedDataset(proposals, box_features)
-            self.data_loader_after = self.build_train_loader_feature(self.cfg, dataset=self.dataset)
-            self._data_loader_after_iter = iter(self.data_loader_after)
-
-            try:
-                self.before_train()
-                for self.iter in range(self.start_iter, self.max_iter):
-                    self.before_step()
-                    self.run_step()
-                    self.after_step()
-                # self.iter == max_iter can be used by `after_train` to
-                # tell whether the training successfully finished or failed
-                # due to exceptions.
-                self.iter += 1
-            except Exception:
-                logger.exception("Exception during training:")
-                raise
-            finally:
-                self.after_train()
-    
-    @classmethod
-    def extract_features(cls, model, data_loader):
-        for batch_idx, data in enumerate(data_loader):
-            if batch_idx == 0:
-                proposals, box_features = model.extract_features(data)
-            else:
-                proposals_batch, box_features_batch = model.extract_features(data)
-                proposals = [*proposals, *proposals_batch]
-                box_features = torch.cat((box_features, box_features_batch), dim=0)
-        return proposals, box_features
-
-    # TODO rebuild the data loader to first extract features and proposals
-    @classmethod
-    def build_train_loader_feature(cls, cfg, extract_features = False, dataset = None):
-        """
-        Returns:
-            iterable
-
-        It now calls :func:`fsdet.data.build_detection_train_loader`.
-        Overwrite it if you'd like a different data loader.
-        """
-        if extract_features: 
-            return build_detection_train_loader(cfg, extract_features=extract_features)
-        else:
-            assert dataset is not None, "Extracted dataset must be specified!"
-            return build_detection_train_loader(cfg, dataset=dataset)
 
     @classmethod
     def build_evaluator(cls, cfg, dataset_name, output_folder=None):
@@ -146,120 +62,14 @@ class Trainer(DefaultTrainer):
         if len(evaluator_list) == 1:
             return evaluator_list[0]
         return DatasetEvaluators(evaluator_list)
-    
-    def run_step(self):
-        """
-        Implement the standard training logic described above.
-        """
-        assert self.model.training, "[SimpleTrainer] model was changed to eval mode!"
-        start = time.perf_counter()
-        """
-        If you want to do something with the data, you can wrap the dataloader.
-        """
-        data = next(self._data_loader_after_iter)
-        proposals, box_features = self.unzip_data(data)
-        data_time = time.perf_counter() - start
-
-        """
-        If you want to do something with the losses, you can wrap the model.
-        """
-        # check if the data is loaded succesfully and generate box_features and proposals
-        loss_dict = self.model.losses_from_features(box_features, proposals)
-        losses = sum(loss_dict.values())
-
-        """
-        If you need to accumulate gradients or do something similar, you can
-        wrap the optimizer with your custom `zero_grad()` method.
-        """
-        self.optimizer.zero_grad()
-        losses.backward()
-
-        self._write_metrics(loss_dict, data_time)
-
-        """
-        If you need gradient clipping/scaling or other processing, you can
-        wrap the optimizer with your custom `step()` method. But it is
-        suboptimal as explained in https://arxiv.org/abs/2006.15704 Sec 3.2.4
-        """
-        self.optimizer.step()
-
-    def unzip_data(self, data):
-        """
-        Restore proposals and box_features from the data batch
-        """
-        proposals, box_features = zip(*data)
-        box_features = torch.cat(box_features, dim=0)
-
-        return proposals, box_features
 
 
-    # # Rewrite some classmethods for the implementation of LBFGS. Write a new subclass if needed.
-    # @classmethod
-    # def build_optimizer(cls, cfg, model):
-    #     """
-    #     Build an LBFGS optimizer from config.
-    #     """
-    #     # LBFGS does not support per-parameter options and parameter groups
-    #     params = model.roi_heads.box_predictor.parameters()
-    #     # params = model.parameters()
-    #     return torch.optim.LBFGS(
-    #         params,
-    #         lr = cfg.SOLVER.BASE_LR,
-    #         history_size = 1,
-    #     )
-
-    # def run_step(self):
-    #     """
-    #     Implement the training logic for LBFGS optimizer.
-    #     """
-    #     assert self.model.training, "[Trainer] model was changed to eval mode!"
-    #     start = time.perf_counter()
-    #     """
-    #     If you want to do something with the data, you can wrap the dataloader.
-    #     """
-    #     data = next(self._data_loader_iter)
-    #     data_time = time.perf_counter() - start
-
-    #     """
-    #     Calculate the losses again for monitoring
-    #     """
-    #     loss_dict = self.model(data)
-    #     self._write_metrics(loss_dict, data_time)
-
-    #     def closure():
-    #         """
-    #         If you want to do something with the losses, you can wrap the model.
-    #         """
-    #         loss_dict = self.model(data)
-    #         losses = sum(loss_dict.values())
-
-    #         """
-    #         If you need to accumulate gradients or do something similar, you can
-    #         wrap the optimizer with your custom `zero_grad()` method.
-    #         """
-    #         self.optimizer.zero_grad()
-    #         losses.backward()
-
-    #         return losses
-
-    #     """
-    #     If you need gradient clipping/scaling or other processing, you can
-    #     wrap the optimizer with your custom `step()` method. But it is
-    #     suboptimal as explained in https://arxiv.org/abs/2006.15704 Sec 3.2.4
-    #     """
-    #     self.optimizer.step(closure)
-
-    #     print('box_head', self.model.roi_heads.box_head.fc1.weight.grad)
-    #     print('box_predictor', self.model.roi_heads.box_predictor.cls_score.weight.grad.abs().sum())
-
-    
 def setup(args):
     """
     Create configs and perform basic setups.
     """
     cfg = get_cfg()
     cfg.merge_from_file(args.config_file)
-    # TBD: modify the OUTPUT_DIR in cfg according to args
     if args.opts:
         cfg.merge_from_list(args.opts)
     cfg.freeze()

@@ -15,6 +15,9 @@ _CC.MODEL.ROI_HEADS.OUTPUT_LAYER = "FastRCNNOutputLayers"
 # scale of cosine similarity (set to -1 for learnable scale)
 _CC.MODEL.ROI_HEADS.COSINE_SCALE = 20.0
 
+# set the path for the pretrained base model weights
+_CC.MODEL.PRETRAINED_BASE_MODEL = None
+
 # Backward Compatible options.
 _CC.MUTE_HEADER = True
 
