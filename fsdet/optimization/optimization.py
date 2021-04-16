@@ -19,19 +19,45 @@ class DetectionLossProblem(MinimizationProblem):
     """
     Compute losses given the model and data
     """
-    def __init__(self, proposals, box_features):
+    def __init__(self, proposals, box_features, mask:TensorList = None, base_params:dict = None, reg = 0.0):
         self.proposals = proposals
         self.box_features = box_features
         self.loss_dict = None
+        # define varible used for regularizing the loss
+        self.mask = mask
+        self.base_params = base_params
+        self.reg = reg
+        # name of layers that were tuned, for CosineOutputLayers
+        self.param_names = ['roi_heads.box_predictor.cls_score.weight', 
+                            'roi_heads.box_predictor.bbox_pred.weight',
+                            'roi_heads.box_predictor.bbox_pred.bias']
+
     def __call__(self, model: GeneralizedRCNN) -> TensorList:
         self.loss_dict = model.losses_from_features(self.box_features, self.proposals)
+        if self.reg != 0.0:
+            params = [p for p in model.roi_heads.box_predictor.parameters()]
+            self.loss_dict.update({'loss_weight': self.reg*self.losses_from_weights(params)})
+            # self.loss_dict = {'loss_weight': self.reg*self.losses_from_weights(params)}
         losses = sum(self.loss_dict.values())
         return TensorList([losses])
 
+    def losses_from_weights(self, params: dict):
+        losses = 0
+        for idx, param_name in enumerate(self.param_names):
+            base_weights_updated = params[idx][(self.mask[idx]==0).nonzero(as_tuple = True)]
+            if len(params[idx].shape) == 2:
+                base_weights_updated = base_weights_updated.view(-1, params[idx].shape[1])
+            losses += torch.sum(torch.square(base_weights_updated - self.base_params[param_name]))
+        return losses
+            
+
+
+        
+
 class DetectionNewtonCG(ConjugateGradientBase):
     """Newton with Conjugate Gradient. Handels minimization problems in detection."""
-    def __init__(self, problem: DetectionLossProblem, model: GeneralizedRCNN, mask = None, init_hessian_reg = 0.0, hessian_reg_factor = 1.0,
-                 cg_eps = 0.0, fletcher_reeves = True, standard_alpha = True, direction_forget_factor = 0,
+    def __init__(self, problem: DetectionLossProblem, model: GeneralizedRCNN, mask = None,
+                 init_hessian_reg = 0.0, hessian_reg_factor = 1.0, cg_eps = 0.0, fletcher_reeves = True, standard_alpha = True, direction_forget_factor = 0,
                  debug = False, analyze = False, plotting = False, fig_num=(10, 11, 12)):
         super().__init__(fletcher_reeves, standard_alpha, direction_forget_factor, debug or analyze or plotting)
 
@@ -143,7 +169,6 @@ class DetectionNewtonCG(ConjugateGradientBase):
         self.b = - self.g.detach()
         # Run CG
         delta_x, res = self.run_CG(num_cg_iter, eps=self.cg_eps)
-
         # mask out the gradient for the params of base classes
         self.x.detach_()
         self.x += delta_x
@@ -153,7 +178,7 @@ class DetectionNewtonCG(ConjugateGradientBase):
 
         if self.debug:
             self.residuals = torch.cat((self.residuals, res))
-        
+
         return loss_dict
 
     def A(self, x):

@@ -53,6 +53,7 @@ from .optimization import DetectionLossProblem, DetectionNewtonCG
 from .gradient_mask import GradientMask
 
 from IPython import embed
+import copy
 
 class CGTrainer(TrainerBase):
     
@@ -89,9 +90,13 @@ class CGTrainer(TrainerBase):
         # define variables used for masking out gradients for pretrained weights
         data_source = cfg.DATASETS.TRAIN[0].split('_')[0]
         base_model = torch.load(cfg.MODEL.PRETRAINED_BASE_MODEL)
-        mask_generator = GradientMask(data_source)
-        self.mask = mask_generator.create_mask(self.model.state_dict(), base_model['model'])
+        self.base_params = base_model['model']
+        
+        self.loss_reg = cfg.CG_PARAMS.LOSS_REG
 
+        mask_generator = GradientMask(data_source)
+        # create a mask where the elements corresponding to the pretrained weights are zero
+        self.mask = mask_generator.create_mask(self.model.state_dict(), self.base_params)
         # Assume no other objects need to be checkpointed.
         # We can later make it checkpoint the stateful hooks
         self.checkpointer = DetectionCheckpointer(
@@ -243,13 +248,15 @@ class CGTrainer(TrainerBase):
         with EventStorage(self.start_iter) as self.storage:
             proposals, box_features = self.extract_features()
             logger.info("Extracted features from frozen layers")
-
+            
             # torch.save(proposals, 'checkpoints_temp/proposals.pt')
             # torch.save(box_features, 'checkpoints_temp/box_features.pt')
             # proposals = torch.load('checkpoints_temp/proposals.pt')
             # box_features = torch.load('checkpoints_temp/box_features.pt')
+            # proposals = torch.load('checkpoints_temp/proposals_coco.pt')
+            # box_features = torch.load('checkpoints_temp/box_features_coco.pt')
 
-            self.problem = DetectionLossProblem(proposals, box_features)
+            self.problem = DetectionLossProblem(proposals, box_features, self.mask, copy.deepcopy(self.base_params), self.loss_reg)
             self.optimizer = self.build_optimizer(self.cfg, self.model, self.problem, self.mask)
 
             try:
@@ -354,7 +361,7 @@ class CGTrainer(TrainerBase):
         return model
 
     @classmethod
-    def build_optimizer(cls, cfg, model, problem, mask):
+    def build_optimizer(cls, cfg, model, problem, mask = None):
         """
         Returns:
             DetectionNewtonCG optimizer:
@@ -364,7 +371,8 @@ class CGTrainer(TrainerBase):
         """
         # TODO more args to be passed to the optimizer
         # return build_optimizer(cfg, model)
-        return DetectionNewtonCG(problem, model, mask,
+        return DetectionNewtonCG(problem, model, 
+        mask = mask,
         debug= cfg.CG_PARAMS.DEBUG, 
         analyze=cfg.CG_PARAMS.ANALYZE_CONVERGENCE, 
         plotting=cfg.CG_PARAMS.PLOTTING)
