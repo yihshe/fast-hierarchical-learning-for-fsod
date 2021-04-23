@@ -38,12 +38,15 @@ def load_coco_json(json_file, image_root, metadata, dataset_name):
     if is_shots:
         fileids = {}
         split_dir = os.path.join("datasets", "cocosplit")
+        # TODO if the random seed needs to be specified when sampling shots
         if "seed" in dataset_name:
             shot = dataset_name.split("_")[-2].split("shot")[0]
             seed = int(dataset_name.split("_seed")[-1])
             split_dir = os.path.join(split_dir, "seed{}".format(seed))
         else:
             shot = dataset_name.split("_")[-1].split("shot")[0]
+        # TODO the thing_classes needs to be shrinked to 60
+        # and the psudo novel and base classes in the base set needs to be randomly splitted for each task
         for idx, cls in enumerate(metadata["thing_classes"]):
             json_file = os.path.join(
                 split_dir, "full_box_{}shot_{}_trainval.json".format(shot, cls)
@@ -64,6 +67,7 @@ def load_coco_json(json_file, image_root, metadata, dataset_name):
         imgs = coco_api.loadImgs(img_ids)
         anns = [coco_api.imgToAnns[img_id] for img_id in img_ids]
         imgs_anns = list(zip(imgs, anns))
+
     id_map = metadata["thing_dataset_id_to_contiguous_id"]
 
     dataset_dicts = []
@@ -88,11 +92,14 @@ def load_coco_json(json_file, image_root, metadata, dataset_name):
                     obj = {key: anno[key] for key in ann_keys if key in anno}
 
                     obj["bbox_mode"] = BoxMode.XYWH_ABS
+                    # TODO notice the transfer from category id to continuous id
+                    # one record for one annotation, as a dict in the list 'dicts'
                     obj["category_id"] = id_map[obj["category_id"]]
                     record["annotations"] = [obj]
                     dicts.append(record)
             if len(dicts) > int(shot):
                 dicts = np.random.choice(dicts, int(shot), replace=False)
+            # the dicts of different categories (file_ids) will all be added to dataset_dicts
             dataset_dicts.extend(dicts)
     else:
         for (img_dict, anno_dict_list) in imgs_anns:
@@ -114,6 +121,7 @@ def load_coco_json(json_file, image_root, metadata, dataset_name):
                 obj["bbox_mode"] = BoxMode.XYWH_ABS
                 if obj["category_id"] in id_map:
                     obj["category_id"] = id_map[obj["category_id"]]
+                    # difference, every recorde corresponds to one image with several annotations
                     objs.append(obj)
             record["annotations"] = objs
             dataset_dicts.append(record)

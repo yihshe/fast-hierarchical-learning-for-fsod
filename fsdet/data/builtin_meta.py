@@ -1,5 +1,7 @@
 # All coco categories, together with their nice-looking visualization colors
 # It's from https://github.com/cocodataset/panopticapi/blob/master/panoptic_coco_categories.json
+import torch
+
 COCO_CATEGORIES = [
     {"color": [220, 20, 60], "isthing": 1, "id": 1, "name": "person"},
     {"color": [119, 11, 32], "isthing": 1, "id": 2, "name": "bicycle"},
@@ -413,7 +415,6 @@ def _get_coco_fewshot_instances_meta():
     ret["base_dataset_id_to_contiguous_id"] = base_dataset_id_to_contiguous_id
     ret["base_classes"] = base_classes
     return ret
-
 
 def _get_lvis_instances_meta_v0_5():
     from .lvis_v0_5_categories import LVIS_CATEGORIES

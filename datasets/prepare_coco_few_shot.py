@@ -2,7 +2,7 @@ import argparse
 import json
 import os
 import random
-
+from IPython import embed
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -32,6 +32,7 @@ def generate_seeds(args):
 
     for i in range(args.seeds[0], args.seeds[1]):
         random.seed(i)
+        # TODO modify the ID2CLASS into 60 base categories
         for c in ID2CLASS.keys():
             img_ids = {}
             for a in anno[c]:
@@ -44,6 +45,8 @@ def generate_seeds(args):
             sample_imgs = []
             for shots in [1, 2, 3, 5, 10, 30]:
                 while True:
+                    # TODO store the image_id (img) that has been used for support set
+                    # and exclude it from the keys of the query set
                     imgs = random.sample(list(img_ids.keys()), shots)
                     for img in imgs:
                         skip = False
@@ -75,6 +78,7 @@ def generate_seeds(args):
 
 def get_save_path_seeds(path, cls, shots, seed):
     s = path.split('/')
+    # TODO change the path to query and support set for each task (which also needs to be registered)
     prefix = 'full_box_{}shot_{}_trainval'.format(shots, cls)
     save_dir = os.path.join('datasets', 'cocosplit', 'seed' + str(seed))
     os.makedirs(save_dir, exist_ok=True)
@@ -166,6 +170,5 @@ if __name__ == '__main__':
         90: "toothbrush",
     }
     CLASS2ID = {v: k for k, v in ID2CLASS.items()}
-
     args = parse_args()
     generate_seeds(args)

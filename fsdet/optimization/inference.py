@@ -1,7 +1,6 @@
 """
 Define the trainer for inference
 """
-# TODO change the config file for training arguments
 import argparse
 import logging
 import os
@@ -71,7 +70,6 @@ class CGTrainer(TrainerBase):
         If you want your model (or a submodule of it) to behave
         like evaluation during training, you can overwrite its train() method.
         """
-        # TODO check if the model get updated correctly
         model = self.build_model(cfg)
         # For training, wrap with DDP. But don't need this for inference.
         if comm.get_world_size() > 1:
@@ -82,7 +80,9 @@ class CGTrainer(TrainerBase):
                 find_unused_parameters=True,
             )
         model.train()
+        # TODO is it possible to share one model architecture (without copying) in batching task?
         self.model=model
+        # TODO the support and query loader for each individual task
         self.data_loader = self.build_train_loader(cfg)
         self.problem = None
         self.optimizer = None
@@ -91,12 +91,15 @@ class CGTrainer(TrainerBase):
         data_source = cfg.DATASETS.TRAIN[0].split('_')[0]
         base_model = torch.load(cfg.MODEL.PRETRAINED_BASE_MODEL)
         self.base_params = base_model['model']
-        
+        # TODO the loss_reg init here should be learnable
         self.loss_reg = cfg.CG_PARAMS.LOSS_REG
 
+        # TODO generate a new mask and at the same time return a new weight dict according to the split of the meta data of the task
         mask_generator = GradientMask(data_source)
         # create a mask where the elements corresponding to the pretrained weights are zero
         self.mask = mask_generator.create_mask(self.model.state_dict(), self.base_params)
+
+        # TODO can be removed for the meta-learner
         # Assume no other objects need to be checkpointed.
         # We can later make it checkpoint the stateful hooks
         self.checkpointer = DetectionCheckpointer(
@@ -105,9 +108,8 @@ class CGTrainer(TrainerBase):
             cfg.OUTPUT_DIR,
         )
         
+        # TODO these parameters can be shared among tasks, add the task specific parameters
         self.start_iter = 0
-        # TODO, add the num_cg_iter in configuration SOLVER_CG
-        # initialize max_iter: int and num_cg_iter: list
         self.max_iter = cfg.CG_PARAMS.NUM_NEWTON_ITER
         self.num_cg_iter = cfg.CG_PARAMS.NUM_CG_ITER
         if isinstance(self.num_cg_iter, int):
@@ -121,6 +123,10 @@ class CGTrainer(TrainerBase):
         self.cfg = cfg
         self.register_hooks(self.build_hooks())
 
+    # TODO load the model in caches but not path, and it can be wrapped in train() of meta_trainer
+    # simplify the process for loading the initial model weights 
+    # step 1: the model was initialized using the base weights
+    # step 2: the box_predictor for each task is init with the new weights 
     def resume_or_load(self, resume=True):
         """
         If `resume==True`, and last checkpoint exists, resume from it.
@@ -132,7 +138,6 @@ class CGTrainer(TrainerBase):
         """
         # The checkpoint stores the training iteration that just finished, thus we start
         # at the next iteration (or iter zero if there's no checkpoint).
-        # TODO check the resume_or_load function
         self.start_iter = (
             self.checkpointer.resume_or_load(
                 self.cfg.MODEL.WEIGHTS, resume=resume
@@ -143,7 +148,8 @@ class CGTrainer(TrainerBase):
             self.start_iter = 0
 
 
-    # TODO all hooks here requires the after_step(), which is now wrapped in NewtonCG
+    # All hooks here requires the after_step(), which is now wrapped in NewtonCG
+    # TODO the periodic writer can be saved for the outer loop of SGD, but is no longer needed for the train() of CG
     def build_hooks(self):
         """
         Build a list of default hooks, including timing, evaluation,
@@ -159,10 +165,9 @@ class CGTrainer(TrainerBase):
         )
 
         ret = [
-            # TODO involves before_ and after_step function
             hooks.IterationTimer(),
             # hooks.LRScheduler(self.optimizer, self.scheduler),
-            # TODO PreciseBN can be removed acutually as .ENABLED is False
+            # PreciseBN can be removed acutually as .ENABLED is False
             hooks.PreciseBN(
                 # Run at the same freq as (but before) evaluation.
                 cfg.TEST.EVAL_PERIOD,
@@ -231,6 +236,7 @@ class CGTrainer(TrainerBase):
             TensorboardXWriter(self.cfg.OUTPUT_DIR),
         ]
 
+    # TODO this function as the inner loop for CG
     def train(self):
         """
         Run training.
@@ -238,14 +244,13 @@ class CGTrainer(TrainerBase):
         Returns:
             OrderedDict of results, if evaluation is enabled. Otherwise None.
         """
-        # TODO rewrite the training function with NewtonCG.run(), similar workflow to detectron2 train()
-
         logger = logging.getLogger(__name__)
         logger.info("Starting training from iteration {}".format(self.start_iter))
 
         self.iter = self.start_iter 
 
         with EventStorage(self.start_iter) as self.storage:
+            # TODO modify the train loader to extract features for individual task
             proposals, box_features = self.extract_features()
             logger.info("Extracted features from frozen layers")
             
@@ -256,6 +261,7 @@ class CGTrainer(TrainerBase):
             # proposals = torch.load('checkpoints_temp/proposals_coco.pt')
             # box_features = torch.load('checkpoints_temp/box_features_coco.pt')
 
+            # TODO the base_params is params of the pseudo base classes, and process for training should be simplified
             self.problem = DetectionLossProblem(proposals, box_features, self.mask, copy.deepcopy(self.base_params), self.loss_reg)
             self.optimizer = self.build_optimizer(self.cfg, self.model, self.problem, self.mask)
 
@@ -279,7 +285,6 @@ class CGTrainer(TrainerBase):
                 self.optimizer.after_train()
                 self.after_train()
                 
-        # TODO also return the losses and residuals as in run()
         if hasattr(self, "_last_eval_results") and comm.is_main_process():
             verify_results(self.cfg, self._last_eval_results)
             return self._last_eval_results
@@ -293,7 +298,8 @@ class CGTrainer(TrainerBase):
                 proposals = [*proposals, *proposals_batch]
                 box_features = torch.cat((box_features, box_features_batch), dim=0)
         return proposals, box_features
-
+    
+    # TODO the run_step of meta learner should wrap the train() of CG trainer
     def run_step(self):
         self.cg_iter = self.num_cg_iter[self.iter]
         loss_dict = self.optimizer.run_newton_iter(self.cg_iter)
@@ -302,7 +308,7 @@ class CGTrainer(TrainerBase):
         # time needed to load the data is 0 since all features were extracted before training
         data_time = 0
         self._write_metrics(loss_dict, data_time)
-
+        
     def _write_metrics(
         self,
         loss_dict: Dict[str, torch.Tensor],
@@ -369,8 +375,6 @@ class CGTrainer(TrainerBase):
         It now calls :func:`fsdet.solver.build_optimizer`.
         Overwrite it if you'd like a different optimizer.
         """
-        # TODO more args to be passed to the optimizer
-        # return build_optimizer(cfg, model)
         return DetectionNewtonCG(problem, model, 
         mask = mask,
         debug= cfg.CG_PARAMS.DEBUG, 
