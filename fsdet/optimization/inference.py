@@ -262,8 +262,12 @@ class CGTrainer(TrainerBase):
             # box_features = torch.load('checkpoints_temp/box_features_coco.pt')
 
             # TODO the base_params is params of the pseudo base classes, and process for training should be simplified
-            self.problem = DetectionLossProblem(proposals, box_features, self.mask, copy.deepcopy(self.base_params), self.loss_reg)
-            self.optimizer = self.build_optimizer(self.cfg, self.model, self.problem, self.mask)
+            self.problem = DetectionLossProblem(proposals, box_features, 
+                                                regularization = True, 
+                                                mask = self.mask, 
+                                                base_params = copy.deepcopy(self.base_params), 
+                                                reg = self.loss_reg)
+            self.optimizer = self.build_optimizer(self.cfg, self.model, self.problem)
 
             try:
                 self.before_train()
@@ -367,7 +371,7 @@ class CGTrainer(TrainerBase):
         return model
 
     @classmethod
-    def build_optimizer(cls, cfg, model, problem, mask = None):
+    def build_optimizer(cls, cfg, model, problem):
         """
         Returns:
             DetectionNewtonCG optimizer:
@@ -375,11 +379,10 @@ class CGTrainer(TrainerBase):
         It now calls :func:`fsdet.solver.build_optimizer`.
         Overwrite it if you'd like a different optimizer.
         """
-        return DetectionNewtonCG(problem, model, 
-        mask = mask,
-        debug= cfg.CG_PARAMS.DEBUG, 
-        analyze=cfg.CG_PARAMS.ANALYZE_CONVERGENCE, 
-        plotting=cfg.CG_PARAMS.PLOTTING)
+        return DetectionNewtonCG(problem, model,
+                                 debug= cfg.CG_PARAMS.DEBUG, 
+                                 analyze=cfg.CG_PARAMS.ANALYZE_CONVERGENCE, 
+                                 plotting=cfg.CG_PARAMS.PLOTTING)
 
     @classmethod
     def build_lr_scheduler(cls, cfg, optimizer):
