@@ -504,7 +504,7 @@ class CosineSimOutputLayers(nn.Module):
         for l in [self.bbox_pred]:
             nn.init.constant_(l.bias, 0)
 
-    def forward(self, x):
+    def forward(self, x, weights = None):
         if x.dim() > 2:
             x = torch.flatten(x, start_dim=1)
 
@@ -513,16 +513,49 @@ class CosineSimOutputLayers(nn.Module):
         x_normalized = x.div(x_norm + 1e-5)
 
         # normalize weight
-        temp_norm = (
-            torch.norm(self.cls_score.weight.data, p=2, dim=1)
-            .unsqueeze(1)
-            .expand_as(self.cls_score.weight.data)
-        )
-        self.cls_score.weight.data = self.cls_score.weight.data.div(
-            temp_norm + 1e-5
-        )
-        # where the cosine similarity is calculated, instance-level feature normalization. 
-        cos_dist = self.cls_score(x_normalized)
-        scores = self.scale * cos_dist
-        proposal_deltas = self.bbox_pred(x)
+        if weights is None:
+            temp_norm = (
+                torch.norm(self.cls_score.weight.data, p=2, dim=1)
+                .unsqueeze(1)
+                .expand_as(self.cls_score.weight.data)
+            )
+            self.cls_score.weight.data = self.cls_score.weight.data.div(
+                temp_norm + 1e-5
+            )
+            # where the cosine similarity is calculated, instance-level feature normalization. 
+            cos_dist = self.cls_score(x_normalized)
+            scores = self.scale * cos_dist
+            proposal_deltas = self.bbox_pred(x)
+            
+        else:
+            # cls_score_weight = weights[0]
+            # bbox_pred_weight = weights[1]
+            # bbox_pred_bias = weights[2]
+            # temp_norm = (
+            #     torch.norm(cls_score_weight, p=2, dim=1)
+            #     .unsqueeze(1)
+            #     .expand_as(cls_score_weight)
+            # )
+            # cls_score_weight_normalized = cls_score_weight.div(
+            #     temp_norm + 1e-5
+            # )
+            # cos_dist = torch.nn.functional.linear(x_normalized, cls_score_weight_normalized, bias=None)
+            # scores = self.scale * cos_dist
+            # proposal_deltas = torch.nn.functional.linear(x, bbox_pred_weight, bias=bbox_pred_bias)
+
+            temp_norm = (
+                torch.norm(weights[0], p=2, dim=1)
+                .unsqueeze(1)
+                .expand_as(weights[0])
+            )
+            weights[0] = weights[0].div(
+                temp_norm + 1e-5
+            )
+            cos_dist = torch.nn.functional.linear(x_normalized, weights[0], bias=None)
+
+            # cos_dist = torch.nn.functional.linear(x, weights[0], bias=None)
+
+            scores = self.scale * cos_dist
+            proposal_deltas = torch.nn.functional.linear(x, weights[1], bias=weights[2]) 
+            
         return scores, proposal_deltas

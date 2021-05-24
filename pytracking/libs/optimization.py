@@ -38,6 +38,10 @@ class MinimizationProblem:
 
     def ip_input(self, a, b):
         """Inner product of the input space."""
+        # ip = TensorList([])
+        # for i in range(len(a)):
+        #     ip.append(torch.sum(torch.mul(a[i], b[i])))
+        # return sum(ip)
         return sum(a.view(-1) @ b.view(-1))
 
     def M1(self, x):
@@ -141,10 +145,12 @@ class ConjugateGradientBase:
             if x is None:
                 x = self.p * alpha
             else:
-                x += self.p * alpha
+                # x += self.p * alpha
+                x = x + self.p*alpha
 
             if ii < num_iter - 1 or self.debug:
-                r -= q * alpha
+                # r -= q * alpha
+                r = r - q*alpha
 
             if eps > 0.0 or self.debug:
                 normr = self.residual_norm(r)

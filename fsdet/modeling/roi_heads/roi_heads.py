@@ -493,20 +493,28 @@ class StandardROIHeads(ROIHeads):
                 self.test_detections_per_img,
             )
             return pred_instances
-
-    def extract_features(self, images, features, proposals, targets=None):
+    
+    # TODO
+    # check the output
+    # check the output of the proposal
+    def extract_features(self, images, features, proposals, targets=None, extract_gt_box_features = False):
         """
         Extract features from the input data
         """
         del images
         assert self.training, "Model was changed to eval mode!"
         proposals = self.label_and_sample_proposals(proposals, targets)
-        del targets
+        # del targets
 
         features_list = [features[f] for f in self.in_features]
         box_features = self._extract_features_box(features_list, proposals)
-
-        return proposals, box_features
+        if not extract_gt_box_features:
+            del targets
+            return proposals, box_features
+        else:
+            gt_box_features, gt_classes = self._extract_gt_features_box(features_list, targets)
+            del targets
+            return proposals, box_features, gt_box_features, gt_classes
 
     def _extract_features_box(self, features, proposals):
         """
@@ -522,14 +530,43 @@ class StandardROIHeads(ROIHeads):
         Returns:
             In training, extracted features (list[Tensor]).
         """
+        # TODO replace proposals with targets and x.gt_boxes, one x corresponds to one img, also store gt.classes
         assert self.training, "Model was changed to eval mode!"
         box_features = self.box_pooler(
             features, [x.proposal_boxes for x in proposals]
         )
         box_features = self.box_head(box_features)
+
+        # print('inside roi feat extracted')
+        # embed()
+
         return box_features
 
-    def losses_from_features(self, box_features, proposals):
+    # TODO filter the novel classes and only extract the novel classes
+    def _extract_gt_features_box(self, features, targets):
+        """
+        Forward logic of the box prediction branch for extracting features for ground truth bbox.
+
+        Args:
+            features (list[Tensor]): #level input features for box prediction
+            targets (list[Instances]): the per-image ground truth of Instances.
+                Each has fields "gt_classes", "gt_boxes".
+
+        Returns:
+            In training, extracted features (list[Tensor]), gt_classes (list[Tensor])
+        """
+        assert self.training, "Model was changed to eval mode!"                
+        # extract features for all ground truth boxes
+        gt_box_features = self.box_pooler(
+            features, [x.gt_boxes for x in targets]
+        )
+        gt_box_features = self.box_head(gt_box_features)
+        
+        gt_classes = [x.gt_classes for x in targets]
+        
+        return gt_box_features, gt_classes
+
+    def losses_from_features(self, box_features, proposals, weights = None):
         """
         Forward logic of the box prediction branch for computing losses.
 
@@ -545,7 +582,7 @@ class StandardROIHeads(ROIHeads):
         """
         assert self.training, "Model was changed to eval mode!"
         pred_class_logits, pred_proposal_deltas = self.box_predictor(
-            box_features
+            box_features, weights
         )
         del box_features
 

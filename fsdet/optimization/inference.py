@@ -12,7 +12,7 @@ from torch.nn.parallel import DistributedDataParallel
 
 import detectron2.data.transforms as T
 from fsdet.checkpoint import DetectionCheckpointer
-from fsdet.engine.hooks import EvalHookFsdet, PeriodicWriterFsdet
+from fsdet.engine.hooks import EvalHookFsdet, PeriodicWriterFsdet, PeriodCheckpointerFsdet
 from fsdet.evaluation import (
     DatasetEvaluator,
     inference_on_dataset,
@@ -48,11 +48,14 @@ from fsdet.evaluation import (
 
 from typing import Dict, List, Optional
 import numpy as np
-from .optimization import DetectionLossProblem, DetectionNewtonCG
+from .optimization import DetectionLossProblem, DetectionNewtonCG, MetaDetectionNewtonCG
 from .gradient_mask import GradientMask
+from .weight_predictor import WeightPredictor
+from .feature_projector import FeatureProjector
 
 from IPython import embed
 import copy
+from pytracking.libs.tensorlist import TensorList
 
 class CGTrainer(TrainerBase):
     
@@ -91,13 +94,22 @@ class CGTrainer(TrainerBase):
         data_source = cfg.DATASETS.TRAIN[0].split('_')[0]
         base_model = torch.load(cfg.MODEL.PRETRAINED_BASE_MODEL)
         self.base_params = base_model['model']
-        # TODO the loss_reg init here should be learnable
-        self.loss_reg = cfg.CG_PARAMS.LOSS_REG
+
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+        # NOTE this is used for scalar lambda
+        # self.loss_reg = cfg.CG_PARAMS.LOSS_REG
+
+        # NOTE this is used for vector lambda
+        vec_reg = torch.load(cfg.CG_PARAMS.LOSS_VEC_REG_PATH)
+        self.loss_reg = TensorList(vec_reg).to(self.device)
 
         # TODO generate a new mask and at the same time return a new weight dict according to the split of the meta data of the task
         mask_generator = GradientMask(data_source)
         # create a mask where the elements corresponding to the pretrained weights are zero
         self.mask = mask_generator.create_mask(self.model.state_dict(), self.base_params)
+        self.NOVEL_CLASSES = mask_generator.NOVEL_CLASSES
+        self.IDMAP = mask_generator.IDMAP
 
         # TODO can be removed for the meta-learner
         # Assume no other objects need to be checkpointed.
@@ -119,6 +131,33 @@ class CGTrainer(TrainerBase):
             self.num_cg_iter = [self.num_cg_iter]*self.max_iter
         self.max_iter = len(self.num_cg_iter)
         assert self.max_iter!=0, "Number of Newton iteration is 0!"
+
+        # for using the weight predictor module
+        self.pred_init_weight = cfg.CG_PARAMS.PRED_INIT_WEIGHT
+        if self.pred_init_weight:
+            weight_predictor = WeightPredictor(cfg.META_PARAMS.WEIGHT_PREDICTOR.FEAT_SIZE, cfg.META_PARAMS.WEIGHT_PREDICTOR.BOX_DIM).to(self.device)
+            weight_predictor.load_state_dict(torch.load(cfg.CG_PARAMS.WEIGHT_PREDICTOR_PATH))
+            
+            # for prefix in ['cls_weight_pred', 'bbox_weight_pred', 'bbox_bias_pred']:
+            #     for suffix in ['f1', 'f2']:
+            #         for attr in ['weight', 'bias']:
+            #             layer_name = '{}_{}'.format(prefix, suffix)
+            #             layer = getattr(getattr(weight_predictor, layer_name), attr)
+            #             if attr == 'weight':
+            #                 torch.nn.init.normal_(layer, 0, 0.001)
+            #             else:
+            #                 torch.nn.init.constant_(layer, 0)
+
+            weight_predictor.eval()
+            self.weight_predictor = weight_predictor
+        
+        # NOTE test for feature projector 
+        self.feature_projector = None
+        if cfg.CG_PARAMS.FEATURE_PROJECTOR_PATH is not None:
+            feature_projector = FeatureProjector(cfg.META_PARAMS.WEIGHT_PREDICTOR.FEAT_SIZE).to(self.device)
+            feature_projector.load_state_dict(torch.load(cfg.CG_PARAMS.FEATURE_PROJECTOR_PATH))
+            feature_projector.eval()
+            self.feature_projector = feature_projector
 
         self.cfg = cfg
         self.register_hooks(self.build_hooks())
@@ -186,7 +225,11 @@ class CGTrainer(TrainerBase):
         # some checkpoints may have more precise statistics than others.
         if comm.is_main_process():
             ret.append(
-                hooks.PeriodicCheckpointer(
+                # NOTE this check pointer is only used for evaluating the meta learned lambda
+                # hooks.PeriodicCheckpointer(
+                #     self.checkpointer, cfg.SOLVER.CHECKPOINT_PERIOD
+                # )
+                PeriodCheckpointerFsdet(
                     self.checkpointer, cfg.SOLVER.CHECKPOINT_PERIOD
                 )
             )
@@ -203,7 +246,7 @@ class CGTrainer(TrainerBase):
         if comm.is_main_process():
             # run writers in the end, so that evaluation metrics are written
             # ret.append(hooks.PeriodicWriter(self.build_writers()))
-            ret.append(PeriodicWriterFsdet(self.build_writers()))
+            ret.append(PeriodicWriterFsdet(self.build_writers(), period=5))
         return ret
 
     def build_writers(self):
@@ -250,10 +293,30 @@ class CGTrainer(TrainerBase):
         self.iter = self.start_iter 
 
         with EventStorage(self.start_iter) as self.storage:
-            # TODO modify the train loader to extract features for individual task
-            proposals, box_features = self.extract_features()
+            # proposals 80*512
+            if self.pred_init_weight:
+                proposals, box_features, gt_box_features, gt_classes = self.extract_features(extract_gt_box_features=True)
+                novel_gt_box_features = self.get_novel_gt_box_features(gt_box_features, gt_classes) 
+
+                novel_init_weights = self.weight_predictor(novel_gt_box_features)
+                
+                # print('novel weight')
+                # embed()
+                # for idx, weight in enumerate(novel_init_weights):
+                #     if idx == 2:
+                #         torch.zero_(weight)
+                #     else:
+                #         torch.nn.init.normal_(weight, 0, 0.01)
+
+            else:
+                proposals, box_features = self.extract_features()
+                novel_init_weights = None
+
+                if self.feature_projector is not None:
+                    box_features = self.feature_projector(box_features)
+                    box_features.detach_()
             logger.info("Extracted features from frozen layers")
-            
+
             # torch.save(proposals, 'checkpoints_temp/proposals.pt')
             # torch.save(box_features, 'checkpoints_temp/box_features.pt')
             # proposals = torch.load('checkpoints_temp/proposals.pt')
@@ -263,11 +326,12 @@ class CGTrainer(TrainerBase):
 
             # TODO the base_params is params of the pseudo base classes, and process for training should be simplified
             self.problem = DetectionLossProblem(proposals, box_features, 
-                                                regularization = True, 
+                                                regularization = 'feature wise', 
                                                 mask = self.mask, 
                                                 base_params = copy.deepcopy(self.base_params), 
                                                 reg = self.loss_reg)
-            self.optimizer = self.build_optimizer(self.cfg, self.model, self.problem)
+            self.optimizer = self.build_optimizer(self.cfg, self.model, self.problem,
+                                                  novel_init_weights, self.IDMAP, self.NOVEL_CLASSES)
 
             try:
                 self.before_train()
@@ -293,15 +357,37 @@ class CGTrainer(TrainerBase):
             verify_results(self.cfg, self._last_eval_results)
             return self._last_eval_results
     
-    def extract_features(self):
-        for batch_idx, data in enumerate(self.data_loader):
-            if batch_idx == 0:
-                proposals, box_features = self.model.extract_features(data)
-            else:
-                proposals_batch, box_features_batch = self.model.extract_features(data)
-                proposals = [*proposals, *proposals_batch]
-                box_features = torch.cat((box_features, box_features_batch), dim=0)
-        return proposals, box_features
+    def get_novel_gt_box_features(self, gt_box_features, gt_classes):
+        novel_gt_box_features = torch.zeros(len(self.NOVEL_CLASSES), gt_box_features.shape[1]).to(self.device)
+        for idx, novel_class in enumerate(self.NOVEL_CLASSES):
+            novel_id = self.IDMAP[novel_class]
+            novel_gt_box_features[idx] = torch.mean(gt_box_features[gt_classes==novel_id],dim=0)
+        
+        return novel_gt_box_features.detach_()
+
+    def extract_features(self, extract_gt_box_features=False):
+        if not extract_gt_box_features:
+            for batch_idx, data in enumerate(self.data_loader):
+                if batch_idx == 0:
+                    proposals, box_features = self.model.extract_features(data)
+                else:
+                    proposals_batch, box_features_batch = self.model.extract_features(data)
+                    proposals = [*proposals, *proposals_batch]
+                    box_features = torch.cat((box_features, box_features_batch), dim=0)
+            return proposals, box_features
+        else:
+            for batch_idx, data in enumerate(self.data_loader):
+                if batch_idx == 0:
+                    proposals, box_features, gt_box_features, gt_classes = self.model.extract_features(data, extract_gt_box_features)
+                else:
+                    proposals_batch, box_features_batch, gt_box_features_batch, gt_classes_batch = self.model.extract_features(data, extract_gt_box_features)
+                    proposals = [*proposals, *proposals_batch]
+                    box_features = torch.cat((box_features, box_features_batch), dim=0)
+                    gt_box_features = torch.cat((gt_box_features, gt_box_features_batch), dim=0)
+                    gt_classes = [*gt_classes, *gt_classes_batch]
+                gt_classes = torch.tensor(gt_classes)
+            return proposals, box_features, gt_box_features, gt_classes
+    
     
     # TODO the run_step of meta learner should wrap the train() of CG trainer
     def run_step(self):
@@ -371,7 +457,7 @@ class CGTrainer(TrainerBase):
         return model
 
     @classmethod
-    def build_optimizer(cls, cfg, model, problem):
+    def build_optimizer(cls, cfg, model, problem, novel_init_weights, IDMAP, NOVEL_CLASSES):
         """
         Returns:
             DetectionNewtonCG optimizer:
@@ -380,9 +466,14 @@ class CGTrainer(TrainerBase):
         Overwrite it if you'd like a different optimizer.
         """
         return DetectionNewtonCG(problem, model,
+                                 augmentation=cfg.CG_PARAMS.AUGMENTATION,
+                                 novel_init_weights=novel_init_weights,
+                                 IDMAP=IDMAP,
+                                 NOVEL_CLASSES=NOVEL_CLASSES,
                                  debug= cfg.CG_PARAMS.DEBUG, 
                                  analyze=cfg.CG_PARAMS.ANALYZE_CONVERGENCE, 
                                  plotting=cfg.CG_PARAMS.PLOTTING)
+
 
     @classmethod
     def build_lr_scheduler(cls, cfg, optimizer):

@@ -10,10 +10,12 @@ from detectron2.config import global_cfg
 from detectron2.engine.train_loop import HookBase
 from detectron2.evaluation.testing import flatten_results_dict
 
-from detectron2.engine.hooks import PeriodicWriter
+from detectron2.engine.hooks import PeriodicWriter, PeriodicCheckpointer
+from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Tuple
+
 from IPython import embed
 
-__all__ = ["EvalHookFsdet", "PeriodicWriterFsdet"]
+__all__ = ["EvalHookFsdet", "PeriodicWriterFsdet", "PeriodCheckpointerFsdet"]
 
 
 class EvalHookFsdet(HookBase):
@@ -88,9 +90,54 @@ class EvalHookFsdet(HookBase):
 
 class PeriodicWriterFsdet(PeriodicWriter):
     # now the loss_dict of the initial model will also be written in logs.
+
+    # def __init__(self, writers, period=10):
+    #     """
+    #     Args:
+    #         writers (list[EventWriter]): a list of EventWriter objects
+    #         period (int):
+    #     """
+    #     super().__init__(writers, period)
+    
     def after_step(self):
         if self.trainer.iter == 0 or (self.trainer.iter + 1) % self._period == 0 or (
             self.trainer.iter == self.trainer.max_iter - 1
             ):
             for writer in self._writers:
                 writer.write()
+
+class PeriodCheckpointerFsdet(PeriodicCheckpointer):
+
+    def step(self, iteration: int, **kwargs: Any) -> None:
+        """
+        Perform the appropriate action at the given iteration.
+
+        Args:
+            iteration (int): the current iteration, ranged in [0, max_iter-1].
+            kwargs (Any): extra data to save, same as in
+                :meth:`Checkpointer.save`.
+        """
+        iteration = int(iteration)
+        additional_state = {"iteration": iteration}
+        additional_state.update(kwargs)
+
+        if (iteration + 1) % self.period == 0:
+            self.checkpointer.save(
+                "{}_{:07d}".format(self.file_prefix, iteration), **additional_state
+            )
+
+            if self.max_to_keep is not None:
+                self.recent_checkpoints.append(self.checkpointer.get_checkpoint_file())
+                # pyre-fixme[58]: `>` is not supported for operand types `int` and
+                #  `Optional[int]`.
+                if len(self.recent_checkpoints) > self.max_to_keep:
+                    file_to_delete = self.recent_checkpoints.pop(0)
+                    if self.path_manager.exists(
+                        file_to_delete
+                    ) and not file_to_delete.endswith(f"{self.file_prefix}_final.pth"):
+                        self.path_manager.rm(file_to_delete)
+
+        if self.max_iter is not None:
+            # pyre-fixme[58]
+            if iteration >= self.max_iter - 1:
+                self.checkpointer.save(f"{self.file_prefix}_final", **additional_state)

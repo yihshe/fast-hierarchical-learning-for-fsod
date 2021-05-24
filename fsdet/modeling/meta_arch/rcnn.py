@@ -200,7 +200,7 @@ class GeneralizedRCNN(nn.Module):
         )
         return images
 
-    def extract_features(self, batched_inputs):
+    def extract_features(self, batched_inputs, extract_gt_box_features = False):
         """
         Args:
             batched_inputs: a list, batched outputs of :class:`DatasetMapper` .
@@ -252,14 +252,21 @@ class GeneralizedRCNN(nn.Module):
                 x["proposals"].to(self.device) for x in batched_inputs
             ]
             proposal_losses = {}
-            
-        proposals, box_features = self.roi_heads.extract_features(
-            images, features, proposals, gt_instances
-        )
         
-        return proposals, box_features
+        # if extract_gt_box_features is False, return proposals, box_features 
+        # elif extract_gt_box_features is True, return proposals, box_features, gt_box_features, gt_classes
+        return self.roi_heads.extract_features(
+            images, features, proposals, gt_instances, extract_gt_box_features
+            )
+        
+        # NOTE the following is original implementation
+        # proposals, box_features = self.roi_heads.extract_features(
+        #     images, features, proposals, gt_instances, extract_gt_box_features
+        # )
+        
+        # return proposals, box_features
 
-    def losses_from_features(self, box_features, proposals):
+    def losses_from_features(self, box_features, proposals, weights = None):
         """
         Forward logic of the box prediction branch for computing losses.
 
@@ -276,7 +283,7 @@ class GeneralizedRCNN(nn.Module):
         
         assert self.training, "Model was changed to eval mode!"
         
-        detector_losses = self.roi_heads.losses_from_features(box_features, proposals)
+        detector_losses = self.roi_heads.losses_from_features(box_features, proposals, weights)
         losses = {}
         losses.update(detector_losses)
         return losses

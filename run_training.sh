@@ -2,7 +2,7 @@
 #SBATCH  --output=sbatch_log/%j.out
 #SBATCH  --gres=gpu:1
 #SBATCH  --mem=30G
-#SBATCH  --constraint='titan_xp'
+
 
 source /scratch_net/biwidl13/yihshe/conda/etc/profile.d/conda.sh
 conda activate pytcu10
@@ -12,16 +12,16 @@ conda activate pytcu10
 #         --src1 checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_base/model_final.pth \
 #         --method remove 
 
-# python3 -m tools.train_net --num-gpus 1 \
-#         --config-file configs/COCO-detection/faster_rcnn_R_101_FPN_ft_novel_1shot.yaml \
-#         --opts MODEL.WEIGHTS checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_base/model_reset_remove.pth
+python3 -m tools.train_net --num-gpus 1 \
+        --config-file configs/COCO-detection/faster_rcnn_R_101_FPN_ft_novel_5shot.yaml \
+        --opts MODEL.WEIGHTS checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_base/model_reset_remove.pth
 
-# python3 -m tools.ckpt_surgery \
-#         --src1 checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_base/model_final.pth \
-#         --src2 checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_ft_novel_1shot/model_final.pth \
-#         --method combine \
-#         --coco \
-#         --save-dir checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_ft_novel_1shot_combine
+python3 -m tools.ckpt_surgery \
+        --src1 checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_base/model_final.pth \
+        --src2 checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_ft_novel_5shot/model_final.pth \
+        --method combine \
+        --coco \
+        --save-dir checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_ft_novel_5shot_combine
 
 # Random initialization
 # python3 -m tools.ckpt_surgery \
@@ -34,9 +34,9 @@ conda activate pytcu10
 #         --opts MODEL.WEIGHTS checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_ft_novel_1shot_combine/model_reset_combine.pth
 
 # for running SGD after feature extraction, which can share same config file with CG
-python3 -m tools.train_net_modified --num-gpus 1 \
-        --config-file configs/COCO-detection_CG/faster_rcnn_R_101_FPN_ft_all_1shot.yaml \
-        --opts MODEL.WEIGHTS checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_ft_novel_1shot_combine/model_reset_combine.pth
+# python3 -m tools.train_net_modified --num-gpus 1 \
+#         --config-file configs/COCO-detection_CG/faster_rcnn_R_101_FPN_ft_all_1shot.yaml \
+#         --opts MODEL.WEIGHTS checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_ft_novel_1shot_combine/model_reset_combine.pth
 
 # python3 -m tools.train_net_modified --num-gpus 1 \
 #         --config-file configs/PascalVOC-detection_CG/split1/faster_rcnn_R_101_FPN_ft_all1_1shot.yaml \
