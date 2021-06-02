@@ -28,6 +28,7 @@ class DetectionLossProblem(MinimizationProblem):
         self.mask = mask
         self.base_params = base_params
         self.reg = reg
+        # TODO here its hard coded to index the params, not suitable for cls_score_bias
         # name of layers that were tuned, for CosineOutputLayers
         self.param_names = ['roi_heads.box_predictor.cls_score.weight', 
                             'roi_heads.box_predictor.bbox_pred.weight',
@@ -54,7 +55,7 @@ class DetectionLossProblem(MinimizationProblem):
         losses = sum(self.loss_dict.values())
         return TensorList([losses])
 
-    def regularization_loss(self, params: dict):
+    def regularization_loss(self, params: list):
         losses = 0.0
         if self.regularization == 'scalar':
             for idx, param_name in enumerate(self.param_names):
@@ -108,12 +109,15 @@ class DetectionNewtonCG(ConjugateGradientBase):
         
         self.model = model
         self.model_eval = copy.deepcopy(model)
-        self.state_dict = self.model.roi_heads.box_predictor.state_dict()
+        # NOTE two stage test
+        # self.state_dict = self.model.roi_heads.box_predictor.state_dict()
+        self.state_dict = self.model.roi_heads.box_predictor_novel.state_dict()
+
         self.layer_names = list(self.state_dict.keys())
         self.x = TensorList([self.state_dict[k].detach().clone() for k in self.state_dict.keys()])
         self.x_eval = TensorList([self.state_dict[k].detach().clone() for k in self.state_dict.keys()])
         self.augmentation = augmentation
-
+        
         self.analyze_convergence = analyze
         self.plotting = plotting
         self.fig_num = fig_num
@@ -225,7 +229,9 @@ class DetectionNewtonCG(ConjugateGradientBase):
             self.losses = torch.cat((self.losses, self.f0[0].detach().cpu().view(-1)))
         
         # Gradient of loss
-        self.g = TensorList(torch.autograd.grad(self.f0, self.model.roi_heads.box_predictor.parameters(), create_graph=True))
+        # NOTE two stage test
+        # self.g = TensorList(torch.autograd.grad(self.f0, self.model.roi_heads.box_predictor.parameters(), create_graph=True))
+        self.g = TensorList(torch.autograd.grad(self.f0, self.model.roi_heads.box_predictor_novel.parameters(), create_graph=True))   
 
         # Get the right hand side
         self.b = - self.g.detach()
@@ -235,9 +241,9 @@ class DetectionNewtonCG(ConjugateGradientBase):
         
         self.x.detach_()
         self.x += delta_x
-    
+        
         self.model_update()
-        # print('loss update: {}'.format(loss_dict))
+        print('loss update: {}'.format(loss_dict))
         # embed()
 
         if self.debug:
@@ -246,7 +252,9 @@ class DetectionNewtonCG(ConjugateGradientBase):
         return loss_dict
 
     def A(self, x):
-        return TensorList(torch.autograd.grad(self.g, self.model.roi_heads.box_predictor.parameters(), x, retain_graph=True)) + self.hessian_reg * x
+        # NOTE ts test
+        # return TensorList(torch.autograd.grad(self.g, self.model.roi_heads.box_predictor.parameters(), x, retain_graph=True)) + self.hessian_reg * x
+        return TensorList(torch.autograd.grad(self.g, self.model.roi_heads.box_predictor_novel.parameters(), x, retain_graph=True)) + self.hessian_reg * x
 
     def ip(self, a, b):
         # Implements the inner product
@@ -279,12 +287,9 @@ class DetectionNewtonCG(ConjugateGradientBase):
         else:
             for i in range(len(self.layer_names)):
                 self.state_dict[self.layer_names[i]] = self.x[i].detach()
-                
-                # getattr(self.model.roi_heads.box_predictor, self.layer_names[i]).weight[:] = self.x[i]
-                # print('updating:', self.layer_names[i])
-                # embed()
-            self.model.roi_heads.box_predictor.load_state_dict(self.state_dict)  
-    
+            # NOTE ts test
+            # self.model.roi_heads.box_predictor.load_state_dict(self.state_dict)  
+            self.model.roi_heads.box_predictor_novel.load_state_dict(self.state_dict)
             # print('updated') 
             # embed()        
 

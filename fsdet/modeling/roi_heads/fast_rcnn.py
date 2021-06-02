@@ -11,6 +11,8 @@ from detectron2.structures import Boxes, Instances
 from detectron2.utils.events import get_event_storage
 from detectron2.utils.registry import Registry
 
+from fsdet.data.builtin_meta import _get_builtin_metadata
+
 from IPython import embed
 
 ROI_HEADS_OUTPUT_REGISTRY = Registry("ROI_HEADS_OUTPUT")
@@ -503,6 +505,16 @@ class CosineSimOutputLayers(nn.Module):
         nn.init.normal_(self.bbox_pred.weight, std=0.001)
         for l in [self.bbox_pred]:
             nn.init.constant_(l.bias, 0)
+        
+        # TODO add a bias layer for the classification
+        self.cls_score_bias = None
+        if cfg.MODEL.ROI_HEADS.CLS_SCORE_LARGE_BIAS is True:
+            cls_score_bias = torch.zeros(num_classes + 1)
+            metadata = _get_builtin_metadata("coco_fewshot")
+            for k in metadata['novel_dataset_id_to_contiguous_id'].keys():
+                cls_score_bias[metadata['thing_dataset_id_to_contiguous_id'][k]] = -10000
+            self.cls_score_bias = nn.Parameter(cls_score_bias)
+
 
     def forward(self, x, weights = None):
         if x.dim() > 2:
@@ -525,9 +537,13 @@ class CosineSimOutputLayers(nn.Module):
             # where the cosine similarity is calculated, instance-level feature normalization. 
             cos_dist = self.cls_score(x_normalized)
             scores = self.scale * cos_dist
-            proposal_deltas = self.bbox_pred(x)
-            
+
+            if self.cls_score_bias is not None:
+                scores = scores + self.cls_score_bias
+
+            proposal_deltas = self.bbox_pred(x)         
         else:
+            # NOTE this is now used for meta learning only
             # cls_score_weight = weights[0]
             # bbox_pred_weight = weights[1]
             # bbox_pred_bias = weights[2]

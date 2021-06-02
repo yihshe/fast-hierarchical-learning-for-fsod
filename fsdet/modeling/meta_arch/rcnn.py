@@ -65,6 +65,12 @@ class GeneralizedRCNN(nn.Module):
             for p in self.roi_heads.box_head.parameters():
                 p.requires_grad = False
             print("froze roi_box_head parameters")
+            
+        # NOTE freeze the base predictor if using the TwoStageROIHead
+        if cfg.MODEL.ROI_HEADS.NAME == "TwoStageROIHeads":
+            for p in self.roi_heads.box_predictor_base.parameters():
+                p.requires_grad = False
+            print("froze roi_box_predictor_base parameters")
 
     def forward(self, batched_inputs):
         """

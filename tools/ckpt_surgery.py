@@ -34,6 +34,9 @@ def parse_args():
                         help='For COCO models')
     parser.add_argument('--lvis', action='store_true',
                         help='For LVIS models')
+    # Model architecture
+    parser.add_argument('--two-stage-roi-heads', action='store_true',
+                        help='For TwoStageROIHeads')
     args = parser.parse_args()
     return args
 
@@ -126,9 +129,72 @@ def combine_ckpts(args):
             else:
                 new_weight[prev_cls:] = ckpt2_weight
         ckpt['model'][weight_name] = new_weight
-
+    
     surgery_loop(args, surgery)
 
+def ckpt_two_stage(args):
+    """
+    Initialize the weights for RCNN with TwoStageROIHeads using either 'randinit' or 'combine' method.
+    """
+    def surgery(param_name, param_name_base, param_name_novel, is_weight, tar_size_base, tar_size_novel, ckpt, ckpt2=None):
+        if not is_weight and param_name + '.bias' not in ckpt['model']:
+            return
+        weight_name = param_name + ('.weight' if is_weight else '.bias')
+        weight_name_base = param_name_base + ('.weight' if is_weight else '.bias')
+        weight_name_novel = param_name_novel + ('.weight' if is_weight else '.bias')
+        pretrained_weight = ckpt['model'][weight_name]
+        
+        new_weight_base = pretrained_weight
+        if args.method == 'randinit':
+            if is_weight:
+                feat_size = pretrained_weight.size(1)
+                new_weight_novel = torch.rand((tar_size_novel, feat_size))
+                torch.nn.init.normal_(new_weight_novel, 0, 0.01)
+            else:
+                new_weight_novel = torch.zeros(tar_size_novel)
+
+        elif args.method == 'combine':
+            ckpt2_weight = ckpt2['model'][weight_name]
+            new_weight_novel = ckpt2_weight
+            
+        ckpt['model'][weight_name_base] = new_weight_base
+        ckpt['model'][weight_name_novel] = new_weight_novel
+        
+    surgery_loop_two_stage(args, surgery)
+
+def surgery_loop_two_stage(args, surgery):
+    assert args.method in ['combine', 'randinit'], "Initializetion for TwoStageROIHeads does not support 'remove'!"
+    # Load checkpoints
+    ckpt = torch.load(args.src1)
+    if args.method == 'combine':
+        ckpt2 = torch.load(args.src2)
+        save_name = args.tar_name + '_combine_ts.pth'
+    else:
+        ckpt2 = None
+        save_name = args.tar_name + '_' + 'surgery_ts.pth'
+    if args.save_dir == '':
+        # By default, save to directory of src1
+        save_dir = os.path.dirname(args.src1)
+    else:
+        save_dir = args.save_dir
+    save_path = os.path.join(save_dir, save_name)
+    os.makedirs(save_dir, exist_ok=True)
+    reset_ckpt(ckpt)
+
+    # Surgery
+    tar_sizes_base = [len(BASE_CLASSES) + 1, len(BASE_CLASSES) * 4]
+    tar_sizes_novel = [len(NOVEL_CLASSES) + 1, len(NOVEL_CLASSES) * 4]
+    param_names_base = ['roi_heads.box_predictor_base.cls_score', 'roi_heads.box_predictor_base.bbox_pred']
+    param_names_novel = ['roi_heads.box_predictor_novel.cls_score', 'roi_heads.box_predictor_novel.bbox_pred']
+    
+    # Assume that base and novel predictors have the same model architecture
+    for idx, (param_name, param_name_base, param_name_novel, tar_size_base, tar_size_novel) in enumerate(zip(args.param_name, param_names_base, param_names_novel, 
+                                                                                                             tar_sizes_base, tar_sizes_novel)):
+        surgery(param_name, param_name_base, param_name_novel, True, tar_size_base, tar_size_novel, ckpt, ckpt2)
+        surgery(param_name, param_name_base, param_name_novel, False, tar_size_base, tar_size_novel, ckpt, ckpt2)
+
+    # Save to file
+    save_ckpt(ckpt, save_path)
 
 def surgery_loop(args, surgery):
     # Load checkpoints
@@ -181,6 +247,7 @@ def reset_ckpt(ckpt):
         del ckpt['optimizer']
     if 'iteration' in ckpt:
         ckpt['iteration'] = 0
+
 
 
 if __name__ == '__main__':
@@ -250,7 +317,10 @@ if __name__ == '__main__':
         # VOC
         TAR_SIZE = 20
 
-    if args.method == 'combine':
-        combine_ckpts(args)
+    if args.two_stage_roi_heads:
+        ckpt_two_stage(args)
     else:
-        ckpt_surgery(args)
+        if args.method == 'combine':
+            combine_ckpts(args)
+        else:
+            ckpt_surgery(args)

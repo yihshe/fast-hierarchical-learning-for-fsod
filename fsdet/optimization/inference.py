@@ -98,16 +98,17 @@ class CGTrainer(TrainerBase):
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
         # NOTE this is used for scalar lambda
-        # self.loss_reg = cfg.CG_PARAMS.LOSS_REG
+        self.loss_reg = cfg.CG_PARAMS.LOSS_REG
 
         # NOTE this is used for vector lambda
-        vec_reg = torch.load(cfg.CG_PARAMS.LOSS_VEC_REG_PATH)
-        self.loss_reg = TensorList(vec_reg).to(self.device)
+        # vec_reg = torch.load(cfg.CG_PARAMS.LOSS_VEC_REG_PATH)
+        # self.loss_reg = TensorList(vec_reg).to(self.device)
 
-        # TODO generate a new mask and at the same time return a new weight dict according to the split of the meta data of the task
         mask_generator = GradientMask(data_source)
-        # create a mask where the elements corresponding to the pretrained weights are zero
-        self.mask = mask_generator.create_mask(self.model.state_dict(), self.base_params)
+        # NOTE for ts test 
+        # self.mask = mask_generator.create_mask(self.model.state_dict(), self.base_params)
+        self.mask = None
+        
         self.NOVEL_CLASSES = mask_generator.NOVEL_CLASSES
         self.IDMAP = mask_generator.IDMAP
 
@@ -137,17 +138,6 @@ class CGTrainer(TrainerBase):
         if self.pred_init_weight:
             weight_predictor = WeightPredictor(cfg.META_PARAMS.WEIGHT_PREDICTOR.FEAT_SIZE, cfg.META_PARAMS.WEIGHT_PREDICTOR.BOX_DIM).to(self.device)
             weight_predictor.load_state_dict(torch.load(cfg.CG_PARAMS.WEIGHT_PREDICTOR_PATH))
-            
-            # for prefix in ['cls_weight_pred', 'bbox_weight_pred', 'bbox_bias_pred']:
-            #     for suffix in ['f1', 'f2']:
-            #         for attr in ['weight', 'bias']:
-            #             layer_name = '{}_{}'.format(prefix, suffix)
-            #             layer = getattr(getattr(weight_predictor, layer_name), attr)
-            #             if attr == 'weight':
-            #                 torch.nn.init.normal_(layer, 0, 0.001)
-            #             else:
-            #                 torch.nn.init.constant_(layer, 0)
-
             weight_predictor.eval()
             self.weight_predictor = weight_predictor
         
@@ -289,7 +279,7 @@ class CGTrainer(TrainerBase):
         """
         logger = logging.getLogger(__name__)
         logger.info("Starting training from iteration {}".format(self.start_iter))
-
+        
         self.iter = self.start_iter 
 
         with EventStorage(self.start_iter) as self.storage:
@@ -326,7 +316,7 @@ class CGTrainer(TrainerBase):
 
             # TODO the base_params is params of the pseudo base classes, and process for training should be simplified
             self.problem = DetectionLossProblem(proposals, box_features, 
-                                                regularization = 'feature wise', 
+                                                regularization = None, 
                                                 mask = self.mask, 
                                                 base_params = copy.deepcopy(self.base_params), 
                                                 reg = self.loss_reg)

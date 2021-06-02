@@ -139,8 +139,13 @@ def main(args):
             resume = False
         else:
             # load checkpoint at last iteration
-            ckpt_file = cfg.MODEL.WEIGHTS
-            resume = True
+            # ckpt_file = cfg.MODEL.WEIGHTS
+            # resume = True
+            ckpt_file = os.path.join(
+                cfg.OUTPUT_DIR, "model_final.pth"
+            )
+            resume = False
+            
         DetectionCheckpointer(model, save_dir=cfg.OUTPUT_DIR).resume_or_load(
             ckpt_file, resume=resume
         )
