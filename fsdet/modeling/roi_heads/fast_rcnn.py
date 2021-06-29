@@ -88,6 +88,8 @@ def fast_rcnn_inference(
             scores, boxes, image_shapes
         )
     ]
+    # print('infer done')
+    # embed()
     return tuple(list(x) for x in zip(*result_per_image))
 
 
@@ -105,6 +107,8 @@ def fast_rcnn_inference_single_image(
     Returns:
         Same as `fast_rcnn_inference`, but for only one image.
     """
+    # print('before single infer')
+    # embed()
     scores = scores[:, :-1]
     num_bbox_reg_classes = boxes.shape[1] // 4
     # Convert to Boxes to use the `clip` function ...
@@ -120,11 +124,13 @@ def fast_rcnn_inference_single_image(
     if num_bbox_reg_classes == 1:
         boxes = boxes[filter_inds[:, 0], 0]
     else:
-        boxes = boxes[filter_mask]
+        boxes = boxes[filter_mask] 
     scores = scores[filter_mask]
 
     # Apply per-class NMS
     keep = batched_nms(boxes, scores, filter_inds[:, 1], nms_thresh)
+    # print('keep')
+    # embed()
     if topk_per_image >= 0:
         keep = keep[:topk_per_image]
     boxes, scores, filter_inds = boxes[keep], scores[keep], filter_inds[keep]
@@ -133,6 +139,8 @@ def fast_rcnn_inference_single_image(
     result.pred_boxes = Boxes(boxes)
     result.scores = scores
     result.pred_classes = filter_inds[:, 1]
+    # print('single infer')
+    # embed()
     return result, filter_inds[:, 0]
 
 
@@ -221,7 +229,7 @@ class FastRCNNOutputs(object):
                 "fast_rcnn/false_negative", num_false_negative / num_fg
             )
 
-    def softmax_cross_entropy_loss(self):
+    def softmax_cross_entropy_loss(self, loss_weight = None):
         """
         Compute the softmax cross entropy loss for box classification.
 
@@ -231,7 +239,7 @@ class FastRCNNOutputs(object):
         self._log_accuracy()
         # embed()
         return F.cross_entropy(
-            self.pred_class_logits, self.gt_classes, reduction="mean"
+            self.pred_class_logits, self.gt_classes, reduction="mean", weight=loss_weight
         )
 
     def smooth_l1_loss(self):
@@ -350,7 +358,7 @@ class FastRCNNOutputs(object):
         loss_box_reg = loss_box_reg / self.gt_classes.numel()
         return loss_box_reg
 
-    def losses(self):
+    def losses(self, loss_weight=None):
         """
         Compute the default losses for box head in Fast(er) R-CNN,
         with softmax cross entropy loss and smooth L1 loss.
@@ -360,7 +368,7 @@ class FastRCNNOutputs(object):
         """
         # TODO provide two options later with either L1 or L2 returned
         return {
-            "loss_cls": self.softmax_cross_entropy_loss(),
+            "loss_cls": self.softmax_cross_entropy_loss(loss_weight),
             # "loss_box_reg": self.smooth_l1_loss(),
             "loss_box_reg": self.squared_l2_loss(),
         }
@@ -373,14 +381,16 @@ class FastRCNNOutputs(object):
                 the number of predicted objects for image i and B is the box dimension (4 or 5)
         """
         num_pred = len(self.proposals)
-        B = self.proposals.tensor.shape[1]
-        K = self.pred_proposal_deltas.shape[1] // B
+        B = self.proposals.tensor.shape[1] #4
+        K = self.pred_proposal_deltas.shape[1] // B #80=320/4
         boxes = self.box2box_transform.apply_deltas(
             self.pred_proposal_deltas.view(num_pred * K, B),
             self.proposals.tensor.unsqueeze(1)
             .expand(num_pred, K, B)
             .reshape(-1, B),
         )
+        # print('pred box')
+        # embed()
         return boxes.view(num_pred, K * B).split(
             self.num_preds_per_image, dim=0
         )
@@ -393,6 +403,8 @@ class FastRCNNOutputs(object):
                 for image i.
         """
         probs = F.softmax(self.pred_class_logits, dim=-1)
+        # print('pred score')
+        # embed()
         return probs.split(self.num_preds_per_image, dim=0)
 
     def inference(self, score_thresh, nms_thresh, topk_per_image):
@@ -456,11 +468,28 @@ class FastRCNNOutputLayers(nn.Module):
         for l in [self.cls_score, self.bbox_pred]:
             nn.init.constant_(l.bias, 0)
 
-    def forward(self, x):
+        self.cls_score_bias = None
+        if cfg.MODEL.ROI_HEADS.CLS_SCORE_LARGE_BIAS is True:
+            cls_score_bias = torch.zeros(num_classes + 1)
+            metadata = _get_builtin_metadata("coco_fewshot")
+            for k in metadata['novel_dataset_id_to_contiguous_id'].keys():
+                cls_score_bias[metadata['thing_dataset_id_to_contiguous_id'][k]] = -10000
+            self.cls_score_bias = nn.Parameter(cls_score_bias)
+
+    def forward(self, x, weights=None):
         if x.dim() > 2:
             x = torch.flatten(x, start_dim=1)
-        scores = self.cls_score(x)
-        proposal_deltas = self.bbox_pred(x)
+
+        if weights is None:
+            scores = self.cls_score(x)
+            proposal_deltas = self.bbox_pred(x)
+
+            if self.cls_score_bias is not None:
+                    scores = scores + self.cls_score_bias
+        else:
+            scores = torch.nn.functional.linear(x, weights[0], bias=weights[1]) 
+            proposal_deltas = torch.nn.functional.linear(x, weights[2], bias=weights[3]) 
+
         return scores, proposal_deltas
 
 
@@ -537,28 +566,13 @@ class CosineSimOutputLayers(nn.Module):
             # where the cosine similarity is calculated, instance-level feature normalization. 
             cos_dist = self.cls_score(x_normalized)
             scores = self.scale * cos_dist
+            proposal_deltas = self.bbox_pred(x)     
 
             if self.cls_score_bias is not None:
-                scores = scores + self.cls_score_bias
-
-            proposal_deltas = self.bbox_pred(x)         
+                scores = scores + self.cls_score_bias  
+                
         else:
             # NOTE this is now used for meta learning only
-            # cls_score_weight = weights[0]
-            # bbox_pred_weight = weights[1]
-            # bbox_pred_bias = weights[2]
-            # temp_norm = (
-            #     torch.norm(cls_score_weight, p=2, dim=1)
-            #     .unsqueeze(1)
-            #     .expand_as(cls_score_weight)
-            # )
-            # cls_score_weight_normalized = cls_score_weight.div(
-            #     temp_norm + 1e-5
-            # )
-            # cos_dist = torch.nn.functional.linear(x_normalized, cls_score_weight_normalized, bias=None)
-            # scores = self.scale * cos_dist
-            # proposal_deltas = torch.nn.functional.linear(x, bbox_pred_weight, bias=bbox_pred_bias)
-
             temp_norm = (
                 torch.norm(weights[0], p=2, dim=1)
                 .unsqueeze(1)

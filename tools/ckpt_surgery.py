@@ -153,6 +153,9 @@ def ckpt_two_stage(args):
             else:
                 new_weight_novel = torch.zeros(tar_size_novel)
 
+            # if 'cls_score' in param_name:
+            #     new_weight_novel[-1] = new_weight_base[-1]
+
         elif args.method == 'combine':
             ckpt2_weight = ckpt2['model'][weight_name]
             new_weight_novel = ckpt2_weight
@@ -185,7 +188,7 @@ def surgery_loop_two_stage(args, surgery):
     tar_sizes_base = [len(BASE_CLASSES) + 1, len(BASE_CLASSES) * 4]
     tar_sizes_novel = [len(NOVEL_CLASSES) + 1, len(NOVEL_CLASSES) * 4]
     param_names_base = ['roi_heads.box_predictor_base.cls_score', 'roi_heads.box_predictor_base.bbox_pred']
-    param_names_novel = ['roi_heads.box_predictor_novel.cls_score', 'roi_heads.box_predictor_novel.bbox_pred']
+    param_names_novel = ['roi_heads.box_predictor.cls_score', 'roi_heads.box_predictor.bbox_pred']
     
     # Assume that base and novel predictors have the same model architecture
     for idx, (param_name, param_name_base, param_name_novel, tar_size_base, tar_size_novel) in enumerate(zip(args.param_name, param_names_base, param_names_novel, 

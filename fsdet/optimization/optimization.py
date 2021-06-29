@@ -13,6 +13,7 @@ import time
 import copy
 
 from IPython import embed
+import os
 
 # TODO self.problem(), how to load data properly to make it compatible with different functions
 class DetectionLossProblem(MinimizationProblem):
@@ -28,7 +29,7 @@ class DetectionLossProblem(MinimizationProblem):
         self.mask = mask
         self.base_params = base_params
         self.reg = reg
-        # TODO here its hard coded to index the params, not suitable for cls_score_bias
+        # NOTE the param names are for box predictor in TFA (cos), not RTS (fc)
         # name of layers that were tuned, for CosineOutputLayers
         self.param_names = ['roi_heads.box_predictor.cls_score.weight', 
                             'roi_heads.box_predictor.bbox_pred.weight',
@@ -44,19 +45,24 @@ class DetectionLossProblem(MinimizationProblem):
         self.loss_dict = model.losses_from_features(box_features, proposals, weights)
 
         if self.regularization is not None:
-            assert self.regularization in ['scalar', 'feature wise'], "Type of regularization is incorrect!"
-            params = [p for p in model.roi_heads.box_predictor.parameters()] if weights is None else weights
-            self.loss_dict.update({'loss_weight': self.regularization_loss(params)}) 
+            # NOTE the annotated part below is for constraining the base weights
+            # assert self.regularization in ['scalar', 'feature wise'], "Type of regularization is incorrect!"
+            # params = [p for p in model.roi_heads.box_predictor.parameters()] if weights is None else weights
+            # self.loss_dict.update({'loss_weight': self.regularization_loss(params)}) 
 
-        # if self.regularization is True:
-        #     params = [p for p in model.roi_heads.box_predictor.parameters()] if weights is None else weights
-        #     self.loss_dict.update({'loss_weight': self.reg*self.losses_from_weights(params)})
+            # TODO rts change it for meta learning regularzing factor in RTS, weights
+            assert self.regularization in ['scalar rts']
+            params = [p for p in model.roi_heads.box_predictor.cls_score.parameters()]
+            # params = [p for p in model.roi_heads.box_predictor_novel.cls_score.parameters()]
+            self.loss_dict.update({'loss_weight': self.regularization_loss(params)})
 
         losses = sum(self.loss_dict.values())
         return TensorList([losses])
-
+    
+    # NOTE this regularization_loss is used for constraining the base weights
     def regularization_loss(self, params: list):
         losses = 0.0
+
         if self.regularization == 'scalar':
             for idx, param_name in enumerate(self.param_names):
                 base_weights_updated = params[idx][(self.mask[idx]==0).nonzero(as_tuple = True)]
@@ -72,6 +78,11 @@ class DetectionLossProblem(MinimizationProblem):
                 if len(params[idx].shape) == 2:
                     base_weights_updated = base_weights_updated.view(-1, params[idx].shape[1])
                 losses = losses + torch.sum(torch.square(self.reg[idx]*(base_weights_updated - self.base_params[param_name])))
+
+        elif self.regularization == 'scalar rts':
+            for param in params:
+                losses = losses + torch.sum(torch.square(param))
+            losses = self.reg*losses
         return losses
 
     def feature_augmentation(self, init_box_features, init_proposals, 
@@ -110,8 +121,8 @@ class DetectionNewtonCG(ConjugateGradientBase):
         self.model = model
         self.model_eval = copy.deepcopy(model)
         # NOTE two stage test
-        # self.state_dict = self.model.roi_heads.box_predictor.state_dict()
-        self.state_dict = self.model.roi_heads.box_predictor_novel.state_dict()
+        self.state_dict = self.model.roi_heads.box_predictor.state_dict()
+        # self.state_dict = self.model.roi_heads.box_predictor_novel.state_dict()
 
         self.layer_names = list(self.state_dict.keys())
         self.x = TensorList([self.state_dict[k].detach().clone() for k in self.state_dict.keys()])
@@ -133,22 +144,40 @@ class DetectionNewtonCG(ConjugateGradientBase):
         self.gradient_mags = torch.zeros(0)
     
     def overwrite_novel_weights(self, model, novel_init_weights, IDMAP, NOVEL_CLASSES):
+        # state_dict = model.roi_heads.box_predictor.state_dict()
+        # layer_names = list(state_dict.keys())
+        # x = TensorList([state_dict[k].detach().clone() for k in state_dict.keys()])
+
+        # for idx in range(len(x)):
+        #     for i, c in enumerate(NOVEL_CLASSES):
+        #         if idx == 0:
+        #             x[idx][IDMAP[c]] = novel_init_weights[idx][i]
+        #         else:
+        #             x[idx][IDMAP[c]*4:(IDMAP[c]+1)*4] = novel_init_weights[idx][i*4:(i+1)*4]
+        
+        # for i in range(len(layer_names)):
+        #         state_dict[layer_names[i]] = x[i].detach()
+
+        # model.roi_heads.box_predictor.load_state_dict(state_dict) 
+
+        # NOTE for test on CG init weights only
         state_dict = model.roi_heads.box_predictor.state_dict()
         layer_names = list(state_dict.keys())
         x = TensorList([state_dict[k].detach().clone() for k in state_dict.keys()])
 
+        # x[0][:-1] = novel_init_weights[0][:]
+        # x[2][:] = novel_init_weights[1][:]
+        # x[3][:] = novel_init_weights[2][:] 
         for idx in range(len(x)):
-            for i, c in enumerate(NOVEL_CLASSES):
-                if idx == 0:
-                    x[idx][IDMAP[c]] = novel_init_weights[idx][i]
-                else:
-                    x[idx][IDMAP[c]*4:(IDMAP[c]+1)*4] = novel_init_weights[idx][i*4:(i+1)*4]
-        # print('overwrite')
-        # embed()
+            x[idx][:] = novel_init_weights[idx][:]
+
         for i in range(len(layer_names)):
                 state_dict[layer_names[i]] = x[i].detach()
 
-        model.roi_heads.box_predictor.load_state_dict(state_dict)  
+        model.roi_heads.box_predictor.load_state_dict(state_dict)
+
+        # print('overwrite')
+        # embed()
         
  
 
@@ -230,31 +259,44 @@ class DetectionNewtonCG(ConjugateGradientBase):
         
         # Gradient of loss
         # NOTE two stage test
-        # self.g = TensorList(torch.autograd.grad(self.f0, self.model.roi_heads.box_predictor.parameters(), create_graph=True))
-        self.g = TensorList(torch.autograd.grad(self.f0, self.model.roi_heads.box_predictor_novel.parameters(), create_graph=True))   
+        self.g = TensorList(torch.autograd.grad(self.f0, self.model.roi_heads.box_predictor.parameters(), create_graph=True))
+        # self.g = TensorList(torch.autograd.grad(self.f0, self.model.roi_heads.box_predictor_novel.parameters(), create_graph=True))   
 
         # Get the right hand side
         self.b = - self.g.detach()
 
         # Run CG
         delta_x, res = self.run_CG(num_cg_iter, eps=self.cg_eps)
+
+        # delta_x = self.grad_clipping(delta_x)
         
         self.x.detach_()
         self.x += delta_x
         
         self.model_update()
-        print('loss update: {}'.format(loss_dict))
+        print('loss update: {}'.format(loss_dict['loss_cls']), 'step norm: {}'.format([torch.sum(torch.square(delta_x[0])), torch.sum(torch.square(delta_x[1]))]))
         # embed()
-
+        
         if self.debug:
             self.residuals = torch.cat((self.residuals, res))
 
         return loss_dict
+    
+    # TODO only for test 
+    def grad_clipping(self, delta_x, norm = 1.0):
+        norm0 = torch.sqrt(torch.sum(torch.square(delta_x[0])))
+        norm1 = torch.sqrt(torch.sum(torch.square(delta_x[1])))
+        if norm0 > norm:
+            delta_x[0] = (delta_x[0]/norm0)*norm
+        if norm1 > norm:
+            delta_x[1] = (delta_x[1]/norm0)*norm
+
+        return delta_x
 
     def A(self, x):
         # NOTE ts test
-        # return TensorList(torch.autograd.grad(self.g, self.model.roi_heads.box_predictor.parameters(), x, retain_graph=True)) + self.hessian_reg * x
-        return TensorList(torch.autograd.grad(self.g, self.model.roi_heads.box_predictor_novel.parameters(), x, retain_graph=True)) + self.hessian_reg * x
+        return TensorList(torch.autograd.grad(self.g, self.model.roi_heads.box_predictor.parameters(), x, retain_graph=True)) + self.hessian_reg * x
+        # return TensorList(torch.autograd.grad(self.g, self.model.roi_heads.box_predictor_novel.parameters(), x, retain_graph=True)) + self.hessian_reg * x
 
     def ip(self, a, b):
         # Implements the inner product
@@ -288,8 +330,8 @@ class DetectionNewtonCG(ConjugateGradientBase):
             for i in range(len(self.layer_names)):
                 self.state_dict[self.layer_names[i]] = self.x[i].detach()
             # NOTE ts test
-            # self.model.roi_heads.box_predictor.load_state_dict(self.state_dict)  
-            self.model.roi_heads.box_predictor_novel.load_state_dict(self.state_dict)
+            self.model.roi_heads.box_predictor.load_state_dict(self.state_dict)  
+            # self.model.roi_heads.box_predictor_novel.load_state_dict(self.state_dict)
             # print('updated') 
             # embed()        
 
@@ -326,13 +368,18 @@ class MetaDetectionNewtonCG(ConjugateGradientBase):
         self.losses = torch.zeros(0)
         self.gradient_mags = torch.zeros(0)
     
+    # TODO rts modify the function to overwrite the weights
     def overwrite_novel_weights(self, novel_init_weights, IDMAP, NOVEL_CLASSES):
+        # NOTE tfa
+        # for idx in range(len(self.x)):
+        #     for i, c in enumerate(NOVEL_CLASSES):
+        #         if idx == 0:
+        #             self.x[idx][IDMAP[c]] = novel_init_weights[idx][i]
+        #         else:
+        #             self.x[idx][IDMAP[c]*4:(IDMAP[c]+1)*4] = novel_init_weights[idx][i*4:(i+1)*4]
+        # NOTE rts novel
         for idx in range(len(self.x)):
-            for i, c in enumerate(NOVEL_CLASSES):
-                if idx == 0:
-                    self.x[idx][IDMAP[c]] = novel_init_weights[idx][i]
-                else:
-                    self.x[idx][IDMAP[c]*4:(IDMAP[c]+1)*4] = novel_init_weights[idx][i*4:(i+1)*4]
+            self.x[idx][:] = novel_init_weights[idx][:]
         # print('overwrite')
         # embed()
 
@@ -384,7 +431,8 @@ class MetaDetectionNewtonCG(ConjugateGradientBase):
         # self.x += delta_x
         self.x = self.x + delta_x
         # self.model_update()
-        # print('update: {}'.format(loss_dict['loss_cls'].item()))
+
+        print('loss update: {}'.format(loss_dict['loss_cls'].item()), 'step norm: {}'.format([torch.sum(torch.square(delta_x[0])).item(), torch.sum(torch.square(delta_x[1])).item()]))
         # embed()
 
         return loss_dict

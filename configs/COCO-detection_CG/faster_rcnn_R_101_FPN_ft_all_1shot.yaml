@@ -1,0 +1,59 @@
+_BASE_: "../Base-RCNN-FPN.yaml"
+MODEL:
+  # for two stage, modify the weight path here
+  # WEIGHTS: "checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_ft_novel_1shot_combine/model_reset_combine.pth"
+  # WEIGHTS: "checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_all/model_reset_surgery.pth"
+  # WEIGHTS: "checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_ft_novel_1shot_combine/model_reset_combine_ts.pth"
+  WEIGHTS: "checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_all/model_reset_surgery_ts.pth"
+  MASK_ON: False
+  RESNETS:
+    DEPTH: 101
+  ROI_HEADS:
+    # for two stage, modify the roi heads name here
+    NAME: "TwoStageROIHeads"
+    NUM_CLASSES: 80
+    # OUTPUT_LAYER: "CosineSimOutputLayers"
+    OUTPUT_LAYER: "FastRCNNOutputLayers"
+    FREEZE_FEAT: True
+    # add, for large cls score bias experiment
+    # CLS_SCORE_LARGE_BIAS: True
+  BACKBONE:
+    FREEZE: True
+  PROPOSAL_GENERATOR:
+    FREEZE: True
+  #add
+  PRETRAINED_BASE_MODEL: "checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_base/model_final.pth"
+DATASETS:
+  # TRAIN: ('coco_trainval_all_1shot',)
+  TRAIN: ('coco_trainval_all_1shot',)
+  TEST: ('coco_test_all',)
+SOLVER:
+  IMS_PER_BATCH: 16
+  # add
+  IMS_PER_BATCH_FEAT_EXTRACT: 10
+  # BASE_LR: 0.001
+  BASE_LR: 0.01
+  STEPS: (14400,)
+  # MAX_ITER: 16000
+  # CHECKPOINT_PERIOD: 1000
+  MAX_ITER: 4000
+  CHECKPOINT_PERIOD: 15
+  WARMUP_ITERS: 15
+# add
+DATALOADER:
+  ASPECT_RATIO_GROUPING: False
+# add
+CG_PARAMS:
+  NUM_NEWTON_ITER: 60
+  NUM_CG_ITER: 2
+  # AUGMENTATION: True
+  # LOSS_VEC_REG_PATH: 'checkpoints_temp/CG_L2_meta_weight_retrained/coco_meta_weight_regvec_std1e-1_iter1000_lr1e-2/faster_rcnn_R_101_FPN_ft_all_1shot/lambda_params_iter999.pt'
+  # PRED_INIT_WEIGHT: True
+  # WEIGHT_PREDICTOR_PATH: 'checkpoints_temp/CG_L2_meta_weight_retrained/coco_meta_weight_iter1000_lr1e-2_newton0/faster_rcnn_R_101_FPN_ft_all_1shot/weight_predictor_iter999.pt'
+  # FEATURE_PROJECTOR_PATH: 'checkpoints_temp/CG_L2_meta_weight_retrained/coco_meta_feature_iter1000_lr1e-2/faster_rcnn_R_101_FPN_ft_all_1shot/feature_projector_iter999.pt'
+
+OUTPUT_DIR: "checkpoints_temp/CG_L2_RTS/coco/cg2_shot1_iter60_rts/faster_rcnn/faster_rcnn_R_101_FPN_ft_all_1shot"
+
+# OUTPUT_DIR: "checkpoints_temp/CG_L2_test/coco/cg2_shot1_iter200_randinit_testnorm/faster_rcnn/faster_rcnn_R_101_FPN_ft_all_1shot"
+# OUTPUT_DIR: "checkpoints_temp/CG_L2_weight_retrained/coco/meta_weight_regvec_std1e-1_lr1e-2_newton5_aug/faster_rcnn/faster_rcnn_R_101_FPN_ft_all_1shot"
+# OUTPUT_DIR: "checkpoints_temp/CG_L2_weight_retrained/coco/meta_feature_lr1e-2_newton5/faster_rcnn/faster_rcnn_R_101_FPN_ft_all_1shot"

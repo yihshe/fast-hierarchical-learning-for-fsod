@@ -56,6 +56,7 @@ from .feature_projector import FeatureProjector
 from IPython import embed
 import copy
 from pytracking.libs.tensorlist import TensorList
+import random
 
 class CGTrainer(TrainerBase):
     
@@ -279,6 +280,9 @@ class CGTrainer(TrainerBase):
         """
         logger = logging.getLogger(__name__)
         logger.info("Starting training from iteration {}".format(self.start_iter))
+
+        # NOTE save the state dict of initial model
+        # torch.save({'model': self.model.state_dict()}, os.path.join(self.cfg.OUTPUT_DIR, "model_init.pth"))
         
         self.iter = self.start_iter 
 
@@ -289,14 +293,6 @@ class CGTrainer(TrainerBase):
                 novel_gt_box_features = self.get_novel_gt_box_features(gt_box_features, gt_classes) 
 
                 novel_init_weights = self.weight_predictor(novel_gt_box_features)
-                
-                # print('novel weight')
-                # embed()
-                # for idx, weight in enumerate(novel_init_weights):
-                #     if idx == 2:
-                #         torch.zero_(weight)
-                #     else:
-                #         torch.nn.init.normal_(weight, 0, 0.01)
 
             else:
                 proposals, box_features = self.extract_features()
@@ -306,23 +302,26 @@ class CGTrainer(TrainerBase):
                     box_features = self.feature_projector(box_features)
                     box_features.detach_()
             logger.info("Extracted features from frozen layers")
+            # embed()
 
-            # torch.save(proposals, 'checkpoints_temp/proposals.pt')
-            # torch.save(box_features, 'checkpoints_temp/box_features.pt')
+            # torch.save(proposals, 'checkpoints_temp/proposals_coco_novel_3lvbg.pt')
+            # torch.save(box_features, 'checkpoints_temp/box_features_coco_novel_3lvbg.pt')
             # proposals = torch.load('checkpoints_temp/proposals.pt')
             # box_features = torch.load('checkpoints_temp/box_features.pt')
-            # proposals = torch.load('checkpoints_temp/proposals_coco.pt')
-            # box_features = torch.load('checkpoints_temp/box_features_coco.pt')
+            # proposals = torch.load('checkpoints_temp/proposals_coco_novel_3lvbg.pt')
+            # box_features = torch.load('checkpoints_temp/box_features_coco_novel_3lvbg.pt')
 
-            # TODO the base_params is params of the pseudo base classes, and process for training should be simplified
             self.problem = DetectionLossProblem(proposals, box_features, 
-                                                regularization = None, 
+                                                regularization = self.cfg.CG_PARAMS.REGULARIZATION_TYPE, 
                                                 mask = self.mask, 
                                                 base_params = copy.deepcopy(self.base_params), 
                                                 reg = self.loss_reg)
             self.optimizer = self.build_optimizer(self.cfg, self.model, self.problem,
                                                   novel_init_weights, self.IDMAP, self.NOVEL_CLASSES)
-
+            
+            # NOTE save the model after the weights being overwritten
+            torch.save({'model': self.model.state_dict()}, os.path.join(self.cfg.OUTPUT_DIR, "model_init.pth"))
+            
             try:
                 self.before_train()
                 self.optimizer.before_train()
@@ -350,7 +349,9 @@ class CGTrainer(TrainerBase):
     def get_novel_gt_box_features(self, gt_box_features, gt_classes):
         novel_gt_box_features = torch.zeros(len(self.NOVEL_CLASSES), gt_box_features.shape[1]).to(self.device)
         for idx, novel_class in enumerate(self.NOVEL_CLASSES):
-            novel_id = self.IDMAP[novel_class]
+            # novel_id = self.IDMAP[novel_class]
+            # NOTE for training novel model only, for rts, it needs to be changed back
+            novel_id = idx
             novel_gt_box_features[idx] = torch.mean(gt_box_features[gt_classes==novel_id],dim=0)
         
         return novel_gt_box_features.detach_()

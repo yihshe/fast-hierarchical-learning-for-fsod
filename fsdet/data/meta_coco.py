@@ -119,6 +119,7 @@ def load_coco_json(json_file, image_root, metadata, dataset_name):
                 obj = {key: anno[key] for key in ann_keys if key in anno}
 
                 obj["bbox_mode"] = BoxMode.XYWH_ABS
+                # TODO for test id map is thing_class map, but not in novel classes
                 if obj["category_id"] in id_map:
                     obj["category_id"] = id_map[obj["category_id"]]
                     # difference, every recorde corresponds to one image with several annotations

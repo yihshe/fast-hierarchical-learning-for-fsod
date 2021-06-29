@@ -142,7 +142,7 @@ def main(args):
             # ckpt_file = cfg.MODEL.WEIGHTS
             # resume = True
             ckpt_file = os.path.join(
-                cfg.OUTPUT_DIR, "model_final.pth"
+                cfg.OUTPUT_DIR, "model_init.pth"
             )
             resume = False
             

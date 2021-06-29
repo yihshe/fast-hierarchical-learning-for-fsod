@@ -1,0 +1,54 @@
+_BASE_: "../Base-RCNN-FPN.yaml"
+MODEL:
+  WEIGHTS: "checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_base/model_reset_remove.pth"
+  MASK_ON: False
+  RESNETS:
+    DEPTH: 101
+  ROI_HEADS:
+    NUM_CLASSES: 20
+    # add
+    OUTPUT_LAYER: "FastRCNNOutputLayers"
+    FREEZE_FEAT: True
+  BACKBONE:
+    FREEZE: True
+  PROPOSAL_GENERATOR:
+    FREEZE: True
+  # add
+  PRETRAINED_BASE_MODEL: "checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_base/model_final.pth"
+DATASETS:
+  TRAIN: ('coco_trainval_novel_1shot',)
+  TEST: ('coco_test_novel',)
+SOLVER:
+  IMS_PER_BATCH: 16
+  # add
+  IMS_PER_BATCH_FEAT_EXTRACT: 5
+  BASE_LR: 0.01
+  STEPS: (10000,)
+  MAX_ITER: 500
+  CHECKPOINT_PERIOD: 500
+  WARMUP_ITERS: 0
+# add
+DATALOADER:
+  ASPECT_RATIO_GROUPING: False
+CG_PARAMS:
+  NUM_NEWTON_ITER_WARMUP: 0
+  # NUM_NEWTON_ITER: 5
+  NUM_NEWTON_ITER: 0
+  NUM_CG_ITER: 2
+  AUGMENTATION: False
+META_PARAMS:
+  MODEL_WEIGHTS: "checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_base/model_reset_remove.pth"
+  # REGULARIZATION_TYPE: 'feature wise'
+  # INIT_LOSS_REG: 1.0
+  NUM_ITER: 500
+  TASKS_PER_BATCH: 1
+  SUPPORT_SET_SHOTS: 1
+  QUERY_SET_SHOTS: 1
+  BASE_CATEGORIES_PATH: "datasets/cocosplit/datasplit/coco_base_categories.pt"
+  TRAINING_DATA_PATH: "datasets/cocosplit/datasplit/trainvalno5k.json"
+  OUTER_OPTIM:
+    BASE_LR: 0.01
+    MOMENTUM: 0.9
+    NESTEROV: False
+    WEIGHT_DECAY: 0.0001
+OUTPUT_DIR: "checkpoints_temp/CG_L2_RTS_meta/coco_meta_weight_iter500_lr1e-2_newton0/faster_rcnn_R_101_FPN_ft_novel_1shot"

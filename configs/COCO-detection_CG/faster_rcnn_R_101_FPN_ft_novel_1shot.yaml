@@ -1,0 +1,45 @@
+_BASE_: "../Base-RCNN-FPN.yaml"
+MODEL:
+  WEIGHTS: "checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_base/model_reset_remove.pth"
+  MASK_ON: False
+  RESNETS:
+    DEPTH: 101
+  ROI_HEADS:
+    NUM_CLASSES: 20
+    # OUTPUT_LAYER: "CosineSimOutputLayers"
+    OUTPUT_LAYER: "FastRCNNOutputLayers"
+    FREEZE_FEAT: True
+  BACKBONE:
+    FREEZE: True
+  PROPOSAL_GENERATOR:
+    FREEZE: True
+  #add
+  PRETRAINED_BASE_MODEL: "checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_base/model_final.pth"
+DATASETS:
+  TRAIN: ('coco_trainval_novel_1shot',)
+  TEST: ('coco_test_novel',)
+SOLVER:
+  IMS_PER_BATCH: 16
+  # add
+  IMS_PER_BATCH_FEAT_EXTRACT: 10
+  BASE_LR: 0.01
+  STEPS: (10000,)
+  MAX_ITER: 300
+  # CHECKPOINT_PERIOD: 500
+  CHECKPOINT_PERIOD: 2
+  WARMUP_ITERS: 0
+# add
+DATALOADER:
+  ASPECT_RATIO_GROUPING: False
+# add
+CG_PARAMS:
+  NUM_NEWTON_ITER: 20
+  NUM_CG_ITER: 2
+  # REGULARIZATION_TYPE: 'scalar rts'
+  # LOSS_REG: 10.0
+  # PRED_INIT_WEIGHT: True
+  # WEIGHT_PREDICTOR_PATH: 'checkpoints_temp/CG_L2_RTS_meta/coco_meta_weight_iter1000_lr1e-2_newton0/faster_rcnn_R_101_FPN_ft_novel_1shot/weight_predictor_iter999.pt'
+  
+# OUTPUT_DIR: "checkpoints_temp/CG_L2_RTS/coco/sgd2_shot1_novel_iter300_metaweight_novel_newton0_iter1000_cg_iter16_exp2/faster_rcnn/faster_rcnn_R_101_FPN_ft_novel_1shot"
+OUTPUT_DIR: "checkpoints_temp/CG_L2_RTS/coco/cg2_shot1_novel_iter20_sgdweightseed10_novel_iter100/faster_rcnn/faster_rcnn_R_101_FPN_ft_novel_1shot"
+# OUTPUT_DIR: "checkpoints_temp/CG_L2_RTS/coco/sgd2_shot1_novel_iter500_seed10/faster_rcnn/faster_rcnn_R_101_FPN_ft_novel_1shot"

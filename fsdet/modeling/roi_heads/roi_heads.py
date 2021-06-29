@@ -14,7 +14,9 @@ from detectron2.modeling.sampling import subsample_labels
 from detectron2.structures import Boxes, Instances, pairwise_iou
 from detectron2.utils.events import get_event_storage
 from detectron2.utils.registry import Registry
+from detectron2.layers import batched_nms, cat
 from typing import Dict
+from torch.nn import functional as F
 
 from .box_head import build_box_head
 from .fast_rcnn import ROI_HEADS_OUTPUT_REGISTRY, FastRCNNOutputLayers, FastRCNNOutputs
@@ -647,7 +649,10 @@ class TwoStageROIHeads(ROIHeads):
         self.num_classes_base = 60
         self.num_classes_novel = 20
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        self.metadata = _get_builtin_metadata('coco_fewshot')
+        # TODO currently, the metadata has not been adapted for meta learning
+        metadata = _get_builtin_metadata('coco_fewshot')
+        self.idmaps = self.init_idmaps(metadata)
+        self.metadata = metadata
 
         # TODO load the pretrained weights and freeze it 
         self.box_predictor_base = ROI_HEADS_OUTPUT_REGISTRY.get(output_layer)(
@@ -657,15 +662,36 @@ class TwoStageROIHeads(ROIHeads):
             self.cls_agnostic_bbox_reg,
         )
         # train it using CG
-        self.box_predictor_novel = ROI_HEADS_OUTPUT_REGISTRY.get(output_layer)(
+        self.box_predictor = ROI_HEADS_OUTPUT_REGISTRY.get(output_layer)(
             cfg,
             self.box_head.output_size,
             self.num_classes_novel,
             self.cls_agnostic_bbox_reg,
         )
+    
+    def init_idmaps(self, metadata):
+        idmap_global = metadata['thing_dataset_id_to_contiguous_id']
+        idmap_global_reversed = {v: k for k, v in idmap_global.items()}
 
+        idmap_base = metadata['base_dataset_id_to_contiguous_id']
+        idmap_base_reversed = {v: k for k, v in idmap_base.items()}
+        base_class_ids_global = [idmap_global[k] for k in idmap_base.keys()]
+
+        idmap_novel = metadata['novel_dataset_id_to_contiguous_id']
+        idmap_novel_reversed = {v: k for k, v in idmap_novel.items()}
+        novel_class_ids_global = [idmap_global[k] for k in idmap_novel.keys()]
+
+        return {
+            'idmap_global': idmap_global,
+            'idmap_global_reversed': idmap_global_reversed,
+            'idmap_base': idmap_base,
+            'idmap_base_reversed': idmap_base_reversed,
+            'base_class_ids_global': base_class_ids_global,
+            'idmap_novel': idmap_novel,
+            'idmap_novel_reversed': idmap_novel_reversed,
+            'novel_class_ids_global': novel_class_ids_global,
+        }
         
-
     def forward(self, images, features, proposals, targets=None):
         """
         See :class:`ROIHeads.forward`.
@@ -705,42 +731,201 @@ class TwoStageROIHeads(ROIHeads):
         box_features = self.box_head(box_features)
 
         # NOTE box predictor should be frozen
-        pred_class_logits_base, pred_proposal_deltas_base = self.box_predictor_base(
-            box_features
-        )
+        pred_class_logits_base, pred_proposal_deltas_base = self.box_predictor_base(box_features)
+        fg_inds, bg_inds, proposals_base, proposals_novel = self.detection_filter(proposals, pred_class_logits_base, pred_proposal_deltas_base)
         
-        # Get the box features of background
-        pred_classes = pred_class_logits_base.argmax(dim=1)
-        bg_class_id = pred_class_logits_base.shape[1]-1
-        fg_inds = torch.arange(len(pred_classes))[pred_classes!=bg_class_id]
-        bg_inds = torch.arange(len(pred_classes))[pred_classes==bg_class_id]
-
-        pred_class_logits_novel, pred_proposal_deltas_novel = self.box_predictor_novel(
-            box_features[bg_inds]
-        )
+        pred_class_logits_base, pred_proposal_deltas_base = pred_class_logits_base[fg_inds], pred_proposal_deltas_base[fg_inds]
+        pred_class_logits_novel, pred_proposal_deltas_novel = self.box_predictor(box_features[bg_inds])
         del box_features
 
-        pred_class_logits, pred_proposal_deltas = self.merge_predictions(fg_inds, bg_inds, pred_class_logits_base, pred_proposal_deltas_base, 
-                                                                         pred_class_logits_novel, pred_proposal_deltas_novel)
-        
-        outputs = FastRCNNOutputs(
+        outputs_novel = FastRCNNOutputs(
             self.box2box_transform,
-            pred_class_logits,
-            pred_proposal_deltas,
-            proposals,
+            pred_class_logits_novel,
+            pred_proposal_deltas_novel,
+            proposals_novel,
             self.smooth_l1_beta,
         )
 
         if self.training:
-            return outputs.losses()
+            return outputs_novel.losses()
         else:
-            pred_instances, _ = outputs.inference(
+            outputs_base = FastRCNNOutputs(
+                self.box2box_transform,
+                pred_class_logits_base,
+                pred_proposal_deltas_base,
+                proposals_base,
+                self.smooth_l1_beta,
+            )
+            pred_instances_base, _ = outputs_base.inference(
                 self.test_score_thresh,
                 self.test_nms_thresh,
                 self.test_detections_per_img,
             )
+            pred_instances_novel, _ = outputs_novel.inference(
+                self.test_score_thresh,
+                self.test_nms_thresh,
+                self.test_detections_per_img,
+            )
+            # print('infer done')
+            # embed()
+
+            # idmap_global = self.metadata['thing_dataset_id_to_contiguous_id']
+            # idmap_base_reversed = {v: k for k, v in self.metadata['base_dataset_id_to_contiguous_id'].items()}
+            # idmap_novel_reversed = {v: k for k, v in self.metadata['novel_dataset_id_to_contiguous_id'].items()}
+
+            idmap_global = self.idmaps['idmap_global']
+            idmap_base_reversed = self.idmaps['idmap_base_reversed']
+            idmap_novel_reversed = self.idmaps['idmap_novel_reversed']
+
+            pred_instances = list([])
+            for instance_base, instance_novel in zip(pred_instances_base, pred_instances_novel):
+                assert instance_base.image_size == instance_novel.image_size
+                instance = Instances(instance_base.image_size)
+                instance.pred_boxes = Boxes(torch.cat((instance_base.pred_boxes.tensor, instance_novel.pred_boxes.tensor)))
+                instance.scores = torch.cat((instance_base.scores, instance_novel.scores))
+
+                pred_classes_mapped_base = torch.zeros(instance_base.pred_classes.shape).to(self.device)
+                for i, pred_class in enumerate(instance_base.pred_classes.cpu().numpy()):
+                    pred_classes_mapped_base[i] = idmap_global[idmap_base_reversed[pred_class]]
+
+                pred_classes_mapped_novel = torch.zeros(instance_novel.pred_classes.shape).to(self.device)
+                for i, pred_class in enumerate(instance_novel.pred_classes.cpu().numpy()):
+                    pred_classes_mapped_novel[i] = idmap_global[idmap_novel_reversed[pred_class]]
+                
+                instance.pred_classes = torch.cat((pred_classes_mapped_base, pred_classes_mapped_novel))
+
+                pred_instances.append(instance)
+            # print('result cat done')
+            # embed()
             return pred_instances
     
+
+    def detection_filter(self, proposals, pred_class_logits_base, pred_proposal_deltas_base):
+        # num_preds_per_image = [len(p) for p in proposals]
+        # score_thresh = 0.05 # change it to cfg later
+        # scores = F.softmax(pred_class_logits_base, dim=-1)
+        # filter_mask = scores[:,:-1]>score_thresh
+        # filter_inds = filter_mask.nonzero()
+        # fg_inds = filter_inds[:,0].unique()
+        # bg_inds = torch.tensor([i for i in torch.arange(scores.shape[0]).to(self.device) if i not in fg_inds])
+
+        # scores_local_list = scores.split(num_preds_per_image, dim=0)
+        # proposals_base = None if self.training else list([]) 
+        # proposals_novel = list([])
+        # for scores_local, proposal in zip(scores_local_list, proposals):
+        #     filter_mask_local = scores_local[:,:-1]>score_thresh
+        #     filter_inds_local = filter_mask_local.nonzero()
+        #     fg_inds_local = filter_inds_local[:,0].unique()
+        #     bg_inds_local = torch.tensor([i for i in torch.arange(scores_local.shape[0]).to(self.device) if i not in fg_inds_local])
+            
+
+        #     if proposals_base is not None:
+        #         proposals_base.append(self.proposal_filter(proposal, fg_inds_local, novel = False))
+        #     proposals_novel.append(self.proposal_filter(proposal, bg_inds_local, novel = True))
+        
+        # NOTE for test
+        outputs_base_simulator = FastRCNNOutputs(
+            self.box2box_transform,
+            pred_class_logits_base,
+            pred_proposal_deltas_base,
+            proposals,
+            self.smooth_l1_beta,
+        )
+
+        _, fg_inds_local_list = outputs_base_simulator.inference(
+            self.test_score_thresh,
+            self.test_nms_thresh,
+            self.test_detections_per_img,
+        )
+        # embed()
+
+        num_preds_per_image = [len(p) for p in proposals]
+        fg_inds = torch.tensor([]).to(self.device)
+        bg_inds = torch.tensor([]).to(self.device)
+        proposals_base = None if self.training else list([]) 
+        proposals_novel = list([])
+        
+        pred_classes = pred_class_logits_base.argmax(dim=1)
+        bg_class_id = pred_class_logits_base.shape[1]-1
+        bg_score_max_bool_list = (pred_classes == bg_class_id).split(num_preds_per_image, dim=0)
+        
+        num_preds_per_image = torch.tensor(num_preds_per_image).long()
+        # TODO modify the filtering procedure here for meta learning of novel predictor, to train and test it on novel dataset only
+        # if self.training:
+        #     for i, (proposal, num_preds) in enumerate(zip(proposals, num_preds_per_image)):
+        #         if proposal.gt_classes[0] in self.idmaps['base_class_ids_global']:
+        #             continue
+        #         else:
+        #             bg_inds_local = torch.tensor([i for i in torch.arange(num_preds)]).long().to(self.device)
+        #             bg_inds = torch.cat((bg_inds, torch.sum(num_preds_per_image[:i])+bg_inds_local)).long()
+        #             proposals_novel.append(self.proposal_filter(proposal, bg_inds_local, novel = True))
+                
+        #         # print('iter')
+        #         # embed()
+    
+        # else:
+        for i, (fg_inds_local, proposal, num_preds, bg_score_max_bool) in enumerate(zip(fg_inds_local_list, proposals, num_preds_per_image, bg_score_max_bool_list)):
+
+            fg_inds_local, _ = fg_inds_local.long().unique().sort()
+            bg_inds_local = torch.tensor([i for i in torch.arange(num_preds).to(self.device)[bg_score_max_bool] if i not in fg_inds_local]).long().to(self.device)
+            
+            fg_inds = torch.cat((fg_inds, torch.sum(num_preds_per_image[:i])+fg_inds_local)).long()
+            bg_inds = torch.cat((bg_inds, torch.sum(num_preds_per_image[:i])+bg_inds_local)).long()
+
+            if proposals_base is not None:
+                proposals_base.append(self.proposal_filter(proposal, fg_inds_local, novel = False))
+
+            proposals_novel.append(self.proposal_filter(proposal, bg_inds_local, novel = True))
+        
+            # print('iter')
+            # embed()
+
+        # pred_classes = pred_class_logits_base.argmax(dim=1)
+        # bg_class_id = pred_class_logits_base.shape[1]-1
+        # fg_inds = torch.arange(len(pred_classes))[pred_classes!=bg_class_id].long().to(self.device)
+        # bg_inds = torch.arange(len(pred_classes))[pred_classes==bg_class_id].long().to(self.device)
+        # pred_class_logits_base_list = pred_class_logits_base.split(num_preds_per_image, dim=0)
+        # for i, (proposal, num_preds, pred_class_logits_base_local) in enumerate(zip(proposals, num_preds_per_image, pred_class_logits_base_list)):
+        #     pred_classes_local = pred_class_logits_base_local.argmax(dim=1)
+        #     fg_inds_local = torch.arange(len(pred_classes_local))[pred_classes_local!=bg_class_id].long().to(self.device)
+        #     bg_inds_local = torch.arange(len(pred_classes_local))[pred_classes_local==bg_class_id].long().to(self.device)
+
+        #     if proposals_base is not None:
+        #         proposals_base.append(self.proposal_filter(proposal, fg_inds_local, novel = False))
+        #     proposals_novel.append(self.proposal_filter(proposal, bg_inds_local, novel = True))
+        
+        # print('filter done')
+        # embed()
+        
+        return fg_inds, bg_inds, proposals_base, proposals_novel
+
+    def proposal_filter(self, proposal, inds, novel = False):
+        proposal_filtered = Instances(proposal.image_size)
+        proposal_filtered.proposal_boxes = Boxes(proposal.proposal_boxes.tensor[inds])
+        proposal_filtered.objectness_logits = proposal.objectness_logits[inds]
+
+        if proposal.has('gt_boxes'):
+            proposal_filtered.gt_boxes = Boxes(proposal.gt_boxes.tensor[inds])
+
+            assert proposal.has('gt_classes')
+            
+            idmap_global = self.idmaps['idmap_global']
+            idmap_global_reversed = self.idmaps['idmap_global_reversed']
+            idmap_local = self.idmaps['idmap_novel'] if novel is True else self.idmaps['idmap_base']
+            bg_class_id_global = self.num_classes_base+self.num_classes_novel
+            bg_class_id_local = self.num_classes_novel if novel is True else self.num_classes_base
+            other_class_ids_global = self.idmaps['base_class_ids_global'] if novel is True else self.idmaps['novel_class_ids_global']
+            other_class_ids_global = list(other_class_ids_global) + [bg_class_id_global]
+
+            gt_classes_filtered = proposal.gt_classes[inds]
+            gt_classes_mapped = torch.zeros(gt_classes_filtered.shape).to(self.device)
+            for i, gt_class in enumerate(gt_classes_filtered.cpu().numpy()):
+                gt_classes_mapped[i] = bg_class_id_local if gt_class in other_class_ids_global else idmap_local[idmap_global_reversed[gt_class]]
+           
+            proposal_filtered.gt_classes = gt_classes_mapped.long()
+
+        return proposal_filtered
+
 
     def merge_predictions(self, fg_inds, bg_inds, pred_class_logits_base, pred_proposal_deltas_base, pred_class_logits_novel, pred_proposal_deltas_novel):
         """"Merge the classification score and bbox deltas from both base and novel predictors"""
@@ -758,12 +943,20 @@ class TwoStageROIHeads(ROIHeads):
         for k, i in self.metadata['base_dataset_id_to_contiguous_id'].items():
             pred_class_logits_base_part[:, IDMAP[k]] = pred_class_logits_base[fg_inds,i]
             pred_proposal_deltas_base_part[:, IDMAP[k]*4:(IDMAP[k]+1)*4] = pred_proposal_deltas_base[fg_inds, i*4:(i+1)*4]
-            
+        # TODO for test
+        pred_class_logits_base_part[:,-1] = pred_class_logits_base[fg_inds, -1]
+
         for k, i in self.metadata['novel_dataset_id_to_contiguous_id'].items():
             pred_class_logits_novel_part[:, IDMAP[k]] = pred_class_logits_novel[:,i]
             pred_proposal_deltas_novel_part[:, IDMAP[k]*4:(IDMAP[k]+1)*4] = pred_proposal_deltas_novel[:, i*4:(i+1)*4]
-        # assign the score for background
-        pred_class_logits_novel_part[:,-1] = pred_class_logits_novel[:,-1]
+        # # assign the score for background
+        # pred_class_logits_novel_part[:,-1] = pred_class_logits_novel[:,-1]
+
+        for k, i in self.metadata['base_dataset_id_to_contiguous_id'].items():
+            pred_class_logits_novel_part[:, IDMAP[k]] = pred_class_logits_base[bg_inds,i]
+            pred_proposal_deltas_novel_part[:, IDMAP[k]*4:(IDMAP[k]+1)*4] = pred_proposal_deltas_base[bg_inds, i*4:(i+1)*4]
+        # TODO for test
+        pred_class_logits_novel_part[:,-1] = pred_class_logits_base[bg_inds, -1]
 
         pred_class_logits[fg_inds, :] = pred_class_logits_base_part
         pred_class_logits[bg_inds, :] = pred_class_logits_novel_part
@@ -772,7 +965,6 @@ class TwoStageROIHeads(ROIHeads):
         pred_proposal_deltas[bg_inds, :] = pred_proposal_deltas_novel_part
 
         return pred_class_logits, pred_proposal_deltas
-
 
     # TODO
     # check the output
@@ -787,14 +979,14 @@ class TwoStageROIHeads(ROIHeads):
         # del targets
 
         features_list = [features[f] for f in self.in_features]
-        box_features = self._extract_features_box(features_list, proposals)
+        proposals_novel, box_features_novel = self._extract_features_box(features_list, proposals)
         if not extract_gt_box_features:
             del targets
-            return proposals, box_features
+            return proposals_novel, box_features_novel
         else:
             gt_box_features, gt_classes = self._extract_gt_features_box(features_list, targets)
             del targets
-            return proposals, box_features, gt_box_features, gt_classes
+            return proposals_novel, box_features_novel, gt_box_features, gt_classes
 
     def _extract_features_box(self, features, proposals):
         """
@@ -817,10 +1009,12 @@ class TwoStageROIHeads(ROIHeads):
         )
         box_features = self.box_head(box_features)
 
-        # print('inside roi feat extracted')
-        # embed()
+        pred_class_logits_base, pred_proposal_deltas_base = self.box_predictor_base(box_features)
+        fg_inds, bg_inds, proposals_base, proposals_novel = self.detection_filter(proposals, pred_class_logits_base, pred_proposal_deltas_base)
+    
+        box_features_novel = box_features[bg_inds] if bg_inds.shape[0] != 0 else torch.tensor([]).to(self.device)
 
-        return box_features
+        return proposals_novel, box_features_novel
 
     # TODO filter the novel classes and only extract the novel classes
     def _extract_gt_features_box(self, features, targets):
@@ -835,6 +1029,7 @@ class TwoStageROIHeads(ROIHeads):
         Returns:
             In training, extracted features (list[Tensor]), gt_classes (list[Tensor])
         """
+        # TODO this has not been adapted for the two stage training
         assert self.training, "Model was changed to eval mode!"                
         # extract features for all ground truth boxes
         gt_box_features = self.box_pooler(
@@ -861,30 +1056,55 @@ class TwoStageROIHeads(ROIHeads):
             In training, a dict of losses.
         """
         assert self.training, "Model was changed to eval mode!"
-        # TODO this needs to be changed accordingly. make it done this afternoon.
-        pred_class_logits_base, pred_proposal_deltas_base = self.box_predictor_base(
-            box_features
-        )
+        # pred_class_logits_base, pred_proposal_deltas_base = self.box_predictor_base(
+        #     box_features
+        # )
         
-        # Get the box features of background
-        pred_classes = pred_class_logits_base.argmax(dim=1)
-        bg_class_id = pred_class_logits_base.shape[1]-1
-        fg_inds = torch.arange(len(pred_classes))[pred_classes!=bg_class_id]
-        bg_inds = torch.arange(len(pred_classes))[pred_classes==bg_class_id]
+        # # Get the box features of background
+        # pred_classes = pred_class_logits_base.argmax(dim=1)
+        # bg_class_id = pred_class_logits_base.shape[1]-1
+        # fg_inds = torch.arange(len(pred_classes))[pred_classes!=bg_class_id]
+        # bg_inds = torch.arange(len(pred_classes))[pred_classes==bg_class_id]
         
-        pred_class_logits_novel, pred_proposal_deltas_novel = self.box_predictor_novel(
-            box_features[bg_inds], weights
+        # pred_class_logits_novel, pred_proposal_deltas_novel = self.box_predictor_novel(
+        #     box_features[bg_inds], weights
+        # )
+        # del box_features
+        # pred_class_logits, pred_proposal_deltas = self.merge_predictions(fg_inds, bg_inds, pred_class_logits_base, pred_proposal_deltas_base, 
+        #                                                                  pred_class_logits_novel, pred_proposal_deltas_novel)
+        
+        # outputs = FastRCNNOutputs(
+        #     self.box2box_transform,
+        #     pred_class_logits,
+        #     pred_proposal_deltas,
+        #     proposals,
+        #     self.smooth_l1_beta,
+        # )
+        # # print('logits')
+        # # embed()
+        # return outputs.losses()
+        
+        # TODO for training, the following code only has to be done once, as both the box_features and box_predictor_base are fixed
+        # pred_class_logits_base, pred_proposal_deltas_base = self.box_predictor_base(box_features)
+        # fg_inds, bg_inds, proposals_base, proposals_novel = self.detection_filter(proposals, pred_class_logits_base, pred_proposal_deltas_base)
+        # pred_class_logits_base, pred_proposal_deltas_base = pred_class_logits_base[fg_inds], pred_proposal_deltas_base[fg_inds]
+       
+        pred_class_logits_novel, pred_proposal_deltas_novel = self.box_predictor(
+            box_features, weights
         )
         del box_features
-        pred_class_logits, pred_proposal_deltas = self.merge_predictions(fg_inds, bg_inds, pred_class_logits_base, pred_proposal_deltas_base, 
-                                                                         pred_class_logits_novel, pred_proposal_deltas_novel)
         
-        outputs = FastRCNNOutputs(
+        outputs_novel = FastRCNNOutputs(
             self.box2box_transform,
-            pred_class_logits,
-            pred_proposal_deltas,
+            pred_class_logits_novel,
+            pred_proposal_deltas_novel,
             proposals,
             self.smooth_l1_beta,
         )
-        return outputs.losses()
+
+        loss_weight = None
+        # loss_weight = torch.ones(pred_class_logits_novel.shape[1]).to(self.device)
+        # loss_weight[-1] = 0.3
+
+        return outputs_novel.losses(loss_weight=loss_weight)
 
