@@ -14,6 +14,8 @@ this file as an example of how to use the library.
 You may want to write your own script with your datasets and other customizations.
 """
 
+from fsdet.engine.hooks import EvalHookFsdet, PeriodicWriterFsdet
+from fvcore.nn.precise_bn import get_bn_modules
 from fsdet.config import get_cfg, set_global_cfg
 from fsdet.engine import DefaultTrainer, default_argument_parser, default_setup
 
@@ -21,7 +23,7 @@ import detectron2.utils.comm as comm
 import os
 from detectron2.checkpoint import DetectionCheckpointer
 from detectron2.data import MetadataCatalog
-from detectron2.engine import launch
+from detectron2.engine import hooks, launch
 from fsdet.evaluation import (
     COCOEvaluator, DatasetEvaluators, LVISEvaluator, PascalVOCDetectionEvaluator, verify_results)
 from fsdet.data import build_detection_train_loader, ExtractedDataset
@@ -38,6 +40,7 @@ from fsdet.optimization.gradient_mask import GradientMask
 from pytracking.libs.tensorlist import TensorList
 
 import random
+
 # The train_net.py has been modified according to this project. 
 # To use the original one, please download a separate file.
 
@@ -67,21 +70,85 @@ class Trainer(DefaultTrainer):
 
         self.proposals = None
         self.box_features = None
-        
+    
+    def build_hooks(self):
+        """
+        Build a list of default hooks, including timing, evaluation,
+        checkpointing, lr scheduling, precise BN, writing events.
+
+        Returns:
+            list[HookBase]:
+        """
+        cfg = self.cfg.clone()
+        cfg.defrost()
+        cfg.DATALOADER.NUM_WORKERS = (
+            0  # save some memory and time for PreciseBN
+        )
+
+        ret = [
+            hooks.IterationTimer(),
+            hooks.LRScheduler(self.optimizer, self.scheduler),
+            hooks.PreciseBN(
+                # Run at the same freq as (but before) evaluation.
+                cfg.TEST.EVAL_PERIOD,
+                self.model,
+                # Build a new data loader to not affect training
+                self.build_train_loader(cfg),
+                cfg.TEST.PRECISE_BN.NUM_ITER,
+            )
+            if cfg.TEST.PRECISE_BN.ENABLED and get_bn_modules(self.model)
+            else None,
+        ]
+
+        # Do PreciseBN before checkpointer, because it updates the model and need to
+        # be saved by checkpointer.
+        # This is not always the best: if checkpointing has a different frequency,
+        # some checkpoints may have more precise statistics than others.
+        if comm.is_main_process():
+            ret.append(
+                hooks.PeriodicCheckpointer(
+                    self.checkpointer, cfg.SOLVER.CHECKPOINT_PERIOD
+                )
+            )
+            
+        # annotate this function so that the final model will not be evaluated
+        # def test_and_save_results():
+        #     self._last_eval_results = self.test(self.cfg, self.model)
+        #     return self._last_eval_results
+
+        # Do evaluation after checkpointer, because then if it fails,
+        # we can use the saved checkpoint to debug.
+        # ret.append(EvalHookFsdet(
+        #     cfg.TEST.EVAL_PERIOD, test_and_save_results, self.cfg))
+
+        if comm.is_main_process():
+            # run writers in the end, so that evaluation metrics are written
+            # ret.append(hooks.PeriodicWriter(self.build_writers()))
+            ret.append(PeriodicWriterFsdet(self.build_writers()))
+        return ret
+
     def train(self):
         """
         Args:
             start_iter, max_iter (int): See docs above
         """
         logger = logging.getLogger(__name__)
-        logger.info("Starting training from iteration {}".format(self.start_iter))
-
+        logger.debug("Starting training from iteration {}".format(self.start_iter))
+        print("Starting training from iteration {}".format(self.start_iter))
+        # TODO check here and print the logger, finish at least part of the introduction today. table and figure needed. send to check.
         self.iter = self.start_iter
 
         with EventStorage(self.start_iter) as self.storage:
             self.data_loader_before = self.build_train_loader_feature(self.cfg, extract_features=True)
+            
+            start = time.perf_counter()
+
             proposals, box_features = self.extract_features(self.model, self.data_loader_before)
-            logger.info("Extracted features from frozen layers")
+            
+            extract_time = time.perf_counter()-start
+            logger.info("Extracted features from frozen layers. Time needed: {}".format(extract_time))
+            print("Extracted features from frozen layers. Time needed: {}".format(extract_time))
+            # logger.info("Extracted features from frozen layers")
             
             # torch.save(proposals, 'checkpoints_temp/proposals_coco.pt')
             # torch.save(box_features, 'checkpoints_temp/box_features_coco.pt')
@@ -90,12 +157,12 @@ class Trainer(DefaultTrainer):
             # proposals = torch.load('checkpoints_temp/proposals_coco_novel_3lvbg.pt')
             # box_features = torch.load('checkpoints_temp/box_features_coco_novel_3lvbg.pt')
 
-            self.proposals = proposals
-            self.box_features = box_features
+            # self.proposals = proposals
+            # self.box_features = box_features
 
-            # self.dataset = ExtractedDataset(proposals, box_features)
-            # self.data_loader_after = self.build_train_loader_feature(self.cfg, dataset=self.dataset)
-            # self._data_loader_after_iter = iter(self.data_loader_after)
+            self.dataset = ExtractedDataset(proposals, box_features)
+            self.data_loader_after = self.build_train_loader_feature(self.cfg, dataset=self.dataset)
+            self._data_loader_after_iter = iter(self.data_loader_after)
 
             try:
                 self.before_train()
@@ -179,12 +246,11 @@ class Trainer(DefaultTrainer):
         """
         If you want to do something with the data, you can wrap the dataloader.
         """
-        # data = next(self._data_loader_after_iter)
-        # proposals, box_features = self.unzip_data(data)
-        # data_time = time.perf_counter() - start
-        proposals, box_features = self.proposals, self.box_features
-        
-        data_time = 0
+        data = next(self._data_loader_after_iter)
+        proposals, box_features = self.unzip_data(data)
+        data_time = time.perf_counter() - start
+        # proposals, box_features = self.proposals, self.box_features
+        # data_time = 0
 
         """
         If you want to do something with the losses, you can wrap the model.
@@ -192,7 +258,7 @@ class Trainer(DefaultTrainer):
         loss_dict = self.model.losses_from_features(box_features, proposals)
         # loss_dict = self.model.losses_from_features(self.box_features, self.proposals)
         losses = sum(loss_dict.values())
-        print('loss update: {}'.format(loss_dict))
+        # print('loss update: {}'.format(loss_dict))
 
         """
         If you need to accumulate gradients or do something similar, you can

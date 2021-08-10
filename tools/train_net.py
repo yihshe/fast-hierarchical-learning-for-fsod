@@ -14,6 +14,7 @@ this file as an example of how to use the library.
 You may want to write your own script with your datasets and other customizations.
 """
 
+from IPython.terminal.embed import embed
 from fsdet.config import get_cfg, set_global_cfg
 from fsdet.engine import DefaultTrainer, default_argument_parser, default_setup
 

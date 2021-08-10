@@ -185,8 +185,15 @@ def surgery_loop_two_stage(args, surgery):
     reset_ckpt(ckpt)
 
     # Surgery
-    tar_sizes_base = [len(BASE_CLASSES) + 1, len(BASE_CLASSES) * 4]
-    tar_sizes_novel = [len(NOVEL_CLASSES) + 1, len(NOVEL_CLASSES) * 4]
+    if args.coco or args.lvis:
+        tar_sizes_base = [len(BASE_CLASSES) + 1, len(BASE_CLASSES) * 4]
+        tar_sizes_novel = [len(NOVEL_CLASSES) + 1, len(NOVEL_CLASSES) * 4]
+    else:
+        # voc
+        len_base_classes_voc = 15
+        len_novel_classes_voc = 5
+        tar_sizes_base = [len_base_classes_voc + 1, len_base_classes_voc * 4]
+        tar_sizes_novel = [len_novel_classes_voc + 1, len_novel_classes_voc * 4]
     param_names_base = ['roi_heads.box_predictor_base.cls_score', 'roi_heads.box_predictor_base.bbox_pred']
     param_names_novel = ['roi_heads.box_predictor.cls_score', 'roi_heads.box_predictor.bbox_pred']
     
@@ -257,6 +264,7 @@ if __name__ == '__main__':
     args = parse_args()
 
     # COCO
+    # NOTE HDA to use the hda split for TFA models and initialization, the split needs to be added
     if args.coco:
         # COCO
         NOVEL_CLASSES = [

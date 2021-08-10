@@ -21,6 +21,8 @@ from detectron2.utils.logger import create_small_table
 
 from fsdet.evaluation.evaluator import DatasetEvaluator
 
+from fsdet.data.meta_coco_hda import HDAMetaInfo
+
 
 class COCOEvaluator(DatasetEvaluator):
     """
@@ -57,14 +59,24 @@ class COCOEvaluator(DatasetEvaluator):
             self._metadata.json_file = cache_path
         self._is_splits = "all" in dataset_name or "base" in dataset_name \
             or "novel" in dataset_name
-        self._base_classes = [
-            8, 10, 11, 13, 14, 15, 22, 23, 24, 25, 27, 28, 31, 32, 33, 34, 35,
-            36, 37, 38, 39, 40, 41, 42, 43, 46, 47, 48, 49, 50, 51, 52, 53, 54,
-            55, 56, 57, 58, 59, 60, 61, 65, 70, 73, 74, 75, 76, 77, 78, 79, 80,
-            81, 82, 84, 85, 86, 87, 88, 89, 90,
-        ]
-        self._novel_classes = [1, 2, 3, 4, 5, 6, 7, 9, 16, 17, 18, 19, 20, 21,
-                               44, 62, 63, 64, 67, 72]
+
+        # NOTE HDA the split need to be changed, and consider how to change the mapping of the super class when evaluating base detector
+        if "hda" in dataset_name:
+            hda_meta_info = HDAMetaInfo()
+            self._novel_classes = list([hda_meta_info.child_cats_name2id[child_cat] for child_cat in hda_meta_info.novel_child_cats])
+            if "base" in dataset_name:
+                self._base_classes = list(hda_meta_info.base_model_cats_id2name.keys())
+            else:
+                self._base_classes = list([hda_meta_info.child_cats_name2id[child_cat] for child_cat in hda_meta_info.base_child_cats])
+        else:
+            self._base_classes = [
+                8, 10, 11, 13, 14, 15, 22, 23, 24, 25, 27, 28, 31, 32, 33, 34, 35,
+                36, 37, 38, 39, 40, 41, 42, 43, 46, 47, 48, 49, 50, 51, 52, 53, 54,
+                55, 56, 57, 58, 59, 60, 61, 65, 70, 73, 74, 75, 76, 77, 78, 79, 80,
+                81, 82, 84, 85, 86, 87, 88, 89, 90,
+            ]
+            self._novel_classes = [1, 2, 3, 4, 5, 6, 7, 9, 16, 17, 18, 19, 20, 21,
+                                44, 62, 63, 64, 67, 72]
 
         json_file = PathManager.get_local_path(self._metadata.json_file)
         with contextlib.redirect_stdout(io.StringIO()):

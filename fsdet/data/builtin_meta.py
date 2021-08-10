@@ -1,6 +1,7 @@
 # All coco categories, together with their nice-looking visualization colors
 # It's from https://github.com/cocodataset/panopticapi/blob/master/panoptic_coco_categories.json
 import torch
+from .meta_coco_hda import HDAMetaInfo
 
 COCO_CATEGORIES = [
     {"color": [220, 20, 60], "isthing": 1, "id": 1, "name": "person"},
@@ -247,6 +248,9 @@ COCO_NOVEL_CATEGORIES = [
     {"color": [183, 130, 88], "isthing": 1, "id": 72, "name": "tv"},
 ]
 
+
+hda_meta_info = HDAMetaInfo()
+
 # PASCAL VOC categories
 PASCAL_VOC_ALL_CATEGORIES = {
     1: [
@@ -392,7 +396,7 @@ def _get_coco_instances_meta():
     }
     return ret
 
-
+# NOTE HDA for hierarchical level 2, this function can be used, only change the novel categories
 def _get_coco_fewshot_instances_meta():
     ret = _get_coco_instances_meta()
     novel_ids = [k["id"] for k in COCO_NOVEL_CATEGORIES if k["isthing"] == 1]
@@ -408,12 +412,24 @@ def _get_coco_fewshot_instances_meta():
     base_ids = [k["id"] for k in base_categories]
     base_dataset_id_to_contiguous_id = {k: i for i, k in enumerate(base_ids)}
     base_classes = [k["name"] for k in base_categories]
+    # NOTE HDA, change the base class and mapping here
     ret[
         "novel_dataset_id_to_contiguous_id"
     ] = novel_dataset_id_to_contiguous_id
     ret["novel_classes"] = novel_classes
     ret["base_dataset_id_to_contiguous_id"] = base_dataset_id_to_contiguous_id
     ret["base_classes"] = base_classes
+    return ret
+
+def _get_coco_fewshot_instances_meta_hda_all():
+    ret = hda_meta_info.get_meta_hda_all()
+    return ret
+
+def _get_coco_fewshot_instances_meta_hda_base():
+    ret = hda_meta_info.get_meta_hda_all()
+    ret_base = hda_meta_info.get_meta_hda_base()
+    ret["base_classes"] = ret_base["base_classes"]
+    ret["base_dataset_id_to_contiguous_id"] = ret_base["base_dataset_id_to_contiguous_id"]
     return ret
 
 def _get_lvis_instances_meta_v0_5():
@@ -461,6 +477,10 @@ def _get_builtin_metadata(dataset_name):
         return _get_coco_instances_meta()
     elif dataset_name == "coco_fewshot":
         return _get_coco_fewshot_instances_meta()
+    elif dataset_name == "coco_fewshot_hda_all":
+        return _get_coco_fewshot_instances_meta_hda_all()
+    elif dataset_name == "coco_fewshot_hda_base":
+        return _get_coco_fewshot_instances_meta_hda_base()
     elif dataset_name == "lvis_v0.5":
         return _get_lvis_instances_meta_v0_5()
     elif dataset_name == "lvis_v0.5_fewshot":

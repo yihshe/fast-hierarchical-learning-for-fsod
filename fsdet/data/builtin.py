@@ -100,6 +100,22 @@ def register_all_coco(root="datasets"):
         ("coco_test_all", "coco/val2014", "cocosplit/datasplit/5k.json"),
         ("coco_test_base", "coco/val2014", "cocosplit/datasplit/5k.json"),
         ("coco_test_novel", "coco/val2014", "cocosplit/datasplit/5k.json"),
+        
+        # NOTE HDA newly added dataset for base training, fine-tuning, with new split of categories
+        (
+            "coco_trainval_hda_all",
+            "coco/trainval2014",
+            "cocosplit/datasplit/trainvalno5k.json",
+        ),
+        ("coco_test_hda_all", "coco/val2014", "cocosplit/datasplit/5k.json"),
+
+        (
+            "coco_trainval_hda_base",
+            "coco/trainval2014",
+            "cocosplit/datasplit/trainvalno5k_hda_base.json",
+        ),
+        ("coco_test_hda_base", "coco/val2014", "cocosplit/datasplit/5k_hda_base.json"),
+
     ]
 
     # register small meta datasets for fine-tuning stage
@@ -109,12 +125,32 @@ def register_all_coco(root="datasets"):
                 seed = "" if seed == 0 else "_seed{}".format(seed)
                 name = "coco_trainval_{}_{}shot{}".format(prefix, shot, seed)
                 METASPLITS.append((name, "coco/trainval2014", ""))
+    
+    # NOTE HDA register the few-shot datasets with the new meta split
+    for prefix in ["all", "novel"]:
+        for shot in [1, 2, 3, 5, 10, 30]:
+            for seed in range(10):
+                seed = "" if seed == 0 else "_seed{}".format(seed)
+                name = "coco_trainval_hda_{}_{}shot{}".format(prefix, shot, seed)
+                METASPLITS.append((name, "coco/trainval2014", ""))
 
     for name, imgdir, annofile in METASPLITS:
+        if 'hda' in name:
+            if 'base' in name:
+                metadata = _get_builtin_metadata("coco_fewshot_hda_base")
+            else:
+                # NOTE HDA the fewshot data for fine-tuning and test_all dataset
+                metadata = _get_builtin_metadata("coco_fewshot_hda_all")
+        else:
+            metadata = _get_builtin_metadata("coco_fewshot")
+
         register_meta_coco(
             name,
-            # TODO change the builtin metadata for each random split of individual task
-            _get_builtin_metadata("coco_fewshot"),
+            # TODO HDA: the metadata here need to be changed, base, novel and super class
+            # for hier 2, pass a new param from cfg to know which split to use
+            # for hier 1 of base training, return another meta data if it is base_hda
+            metadata,
+            # _get_builtin_metadata("coco_fewshot"),
             os.path.join(root, imgdir),
             os.path.join(root, annofile),
         )

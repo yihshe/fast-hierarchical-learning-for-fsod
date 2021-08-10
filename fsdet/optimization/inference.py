@@ -50,13 +50,14 @@ from typing import Dict, List, Optional
 import numpy as np
 from .optimization import DetectionLossProblem, DetectionNewtonCG, MetaDetectionNewtonCG
 from .gradient_mask import GradientMask
-from .weight_predictor import WeightPredictor
+from .weight_predictor import WeightPredictor, WeightPredictor2, WeightPredictor3
 from .feature_projector import FeatureProjector
 
 from IPython import embed
 import copy
 from pytracking.libs.tensorlist import TensorList
 import random
+import time
 
 class CGTrainer(TrainerBase):
     
@@ -99,16 +100,26 @@ class CGTrainer(TrainerBase):
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
         # NOTE this is used for scalar lambda
-        self.loss_reg = cfg.CG_PARAMS.LOSS_REG
+        # self.loss_reg = cfg.CG_PARAMS.LOSS_REG
 
         # NOTE this is used for vector lambda
         # vec_reg = torch.load(cfg.CG_PARAMS.LOSS_VEC_REG_PATH)
         # self.loss_reg = TensorList(vec_reg).to(self.device)
 
+        self.loss_reg = None
+        
+        if cfg.CG_PARAMS.REGULARIZATION_TYPE == 'scalar':
+            self.loss_reg = cfg.CG_PARAMS.LOSS_REG
+        elif cfg.CG_PARAMS.REGULARIZATION_TYPE == 'feature wise':
+            vec_reg = torch.load(cfg.CG_PARAMS.LOSS_VEC_REG_PATH)
+            self.loss_reg = TensorList(vec_reg).to(self.device)
+        
         mask_generator = GradientMask(data_source)
-        # NOTE for ts test 
+        # NOTE for TFA
         # self.mask = mask_generator.create_mask(self.model.state_dict(), self.base_params)
-        self.mask = None
+        # NOTE for HDA, which does not use regularization
+        # self.mask = None
+        self.mask = mask_generator.create_mask(self.model.state_dict(), self.base_params) if cfg.CG_PARAMS.REGULARIZATION_TYPE is not None else None
         
         self.NOVEL_CLASSES = mask_generator.NOVEL_CLASSES
         self.IDMAP = mask_generator.IDMAP
@@ -137,7 +148,7 @@ class CGTrainer(TrainerBase):
         # for using the weight predictor module
         self.pred_init_weight = cfg.CG_PARAMS.PRED_INIT_WEIGHT
         if self.pred_init_weight:
-            weight_predictor = WeightPredictor(cfg.META_PARAMS.WEIGHT_PREDICTOR.FEAT_SIZE, cfg.META_PARAMS.WEIGHT_PREDICTOR.BOX_DIM).to(self.device)
+            weight_predictor = WeightPredictor3(cfg.META_PARAMS.WEIGHT_PREDICTOR.FEAT_SIZE, cfg.META_PARAMS.WEIGHT_PREDICTOR.BOX_DIM).to(self.device)
             weight_predictor.load_state_dict(torch.load(cfg.CG_PARAMS.WEIGHT_PREDICTOR_PATH))
             weight_predictor.eval()
             self.weight_predictor = weight_predictor
@@ -288,6 +299,8 @@ class CGTrainer(TrainerBase):
 
         with EventStorage(self.start_iter) as self.storage:
             # proposals 80*512
+            # TODO count the time needed for feat extraction and output it to the logger
+            start = time.perf_counter()
             if self.pred_init_weight:
                 proposals, box_features, gt_box_features, gt_classes = self.extract_features(extract_gt_box_features=True)
                 novel_gt_box_features = self.get_novel_gt_box_features(gt_box_features, gt_classes) 
@@ -301,26 +314,27 @@ class CGTrainer(TrainerBase):
                 if self.feature_projector is not None:
                     box_features = self.feature_projector(box_features)
                     box_features.detach_()
-            logger.info("Extracted features from frozen layers")
-            # embed()
+                    
+            extract_time = time.perf_counter()-start
+            logger.info("Extracted features from frozen layers. Time needed: {}".format(extract_time))
 
-            # torch.save(proposals, 'checkpoints_temp/proposals_coco_novel_3lvbg.pt')
-            # torch.save(box_features, 'checkpoints_temp/box_features_coco_novel_3lvbg.pt')
-            # proposals = torch.load('checkpoints_temp/proposals.pt')
-            # box_features = torch.load('checkpoints_temp/box_features.pt')
-            # proposals = torch.load('checkpoints_temp/proposals_coco_novel_3lvbg.pt')
-            # box_features = torch.load('checkpoints_temp/box_features_coco_novel_3lvbg.pt')
+            # torch.save(proposals, 'checkpoints_temp/voc_novel_2shot_proposals_rts_novel.pt')
+            # torch.save(box_features, 'checkpoints_temp/voc_novel_2shot_box_features_rts_novel.pt')
+            # proposals = torch.load('checkpoints_temp/voc_novel_2shot_proposals_rts.pt')
+            # box_features = torch.load('checkpoints_temp/voc_novel_2shot_box_features_rts.pt')
 
             self.problem = DetectionLossProblem(proposals, box_features, 
                                                 regularization = self.cfg.CG_PARAMS.REGULARIZATION_TYPE, 
                                                 mask = self.mask, 
                                                 base_params = copy.deepcopy(self.base_params), 
-                                                reg = self.loss_reg)
+                                                reg = self.loss_reg,
+                                                augmentation = self.cfg.CG_PARAMS.AUGMENTATION,
+                                                bg_class_id = self.cfg.MODEL.ROI_HEADS.NUM_CLASSES_NOVEL)
             self.optimizer = self.build_optimizer(self.cfg, self.model, self.problem,
                                                   novel_init_weights, self.IDMAP, self.NOVEL_CLASSES)
             
             # NOTE save the model after the weights being overwritten
-            torch.save({'model': self.model.state_dict()}, os.path.join(self.cfg.OUTPUT_DIR, "model_init.pth"))
+            # torch.save({'model': self.model.state_dict()}, os.path.join(self.cfg.OUTPUT_DIR, "model_init.pth"))
             
             try:
                 self.before_train()
@@ -349,9 +363,11 @@ class CGTrainer(TrainerBase):
     def get_novel_gt_box_features(self, gt_box_features, gt_classes):
         novel_gt_box_features = torch.zeros(len(self.NOVEL_CLASSES), gt_box_features.shape[1]).to(self.device)
         for idx, novel_class in enumerate(self.NOVEL_CLASSES):
-            # novel_id = self.IDMAP[novel_class]
-            # NOTE for training novel model only, for rts, it needs to be changed back
-            novel_id = idx
+            # NOTE for meta learning of TFA
+            novel_id = self.IDMAP[novel_class]
+            # NOTE for training novel model only, for rts, it needs to be changed back, as the gt_classes contain all classes
+            # novel_id = idx
+            
             novel_gt_box_features[idx] = torch.mean(gt_box_features[gt_classes==novel_id],dim=0)
         
         return novel_gt_box_features.detach_()
@@ -457,10 +473,11 @@ class CGTrainer(TrainerBase):
         Overwrite it if you'd like a different optimizer.
         """
         return DetectionNewtonCG(problem, model,
-                                 augmentation=cfg.CG_PARAMS.AUGMENTATION,
                                  novel_init_weights=novel_init_weights,
                                  IDMAP=IDMAP,
                                  NOVEL_CLASSES=NOVEL_CLASSES,
+                                 init_hessian_reg=cfg.CG_PARAMS.INIT_HESSIAN_REG,
+                                 hessian_reg_factor=cfg.CG_PARAMS.HESSIAN_REG_FACTOR,
                                  debug= cfg.CG_PARAMS.DEBUG, 
                                  analyze=cfg.CG_PARAMS.ANALYZE_CONVERGENCE, 
                                  plotting=cfg.CG_PARAMS.PLOTTING)

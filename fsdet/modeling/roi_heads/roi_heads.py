@@ -646,11 +646,14 @@ class TwoStageROIHeads(ROIHeads):
         output_layer = cfg.MODEL.ROI_HEADS.OUTPUT_LAYER
 
         # TODO change the number of classes to cfg params
-        self.num_classes_base = 60
-        self.num_classes_novel = 20
+        # TODO add pascal voc 15, 5
+        self.num_classes_base = cfg.MODEL.ROI_HEADS.NUM_CLASSES_BASE
+        self.num_classes_novel = cfg.MODEL.ROI_HEADS.NUM_CLASSES_NOVEL
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         # TODO currently, the metadata has not been adapted for meta learning
-        metadata = _get_builtin_metadata('coco_fewshot')
+        # for voc, the idmap of metadata needs to be set up here, novel is the last five
+        metadata = self.get_metadata(cfg.DATASETS.TRAIN[0])
+        # metadata = _get_builtin_metadata('coco_fewshot')
         self.idmaps = self.init_idmaps(metadata)
         self.metadata = metadata
 
@@ -668,7 +671,22 @@ class TwoStageROIHeads(ROIHeads):
             self.num_classes_novel,
             self.cls_agnostic_bbox_reg,
         )
-    
+
+    def get_metadata(self, dataset_name):
+        metadata = dict({})
+        if 'coco' in dataset_name:
+            metadata = _get_builtin_metadata('coco_fewshot')
+        elif 'voc' in dataset_name:
+            sid = int(dataset_name.split('all')[1].split('_')[0])
+            init_metadata = _get_builtin_metadata('pascal_voc_fewshot')
+            metadata['thing_classes'] = init_metadata['thing_classes'][sid]
+            metadata['base_classes'] = init_metadata['base_classes'][sid]
+            metadata['novel_classes'] = init_metadata['novel_classes'][sid]
+            metadata['thing_dataset_id_to_contiguous_id'] = {i:i for i,v in enumerate(metadata['thing_classes'])}
+            metadata['base_dataset_id_to_contiguous_id'] = {i:i for i,v in enumerate(metadata['base_classes'])}
+            metadata['novel_dataset_id_to_contiguous_id'] = {len(metadata['base_classes'])+i:i for i,v in enumerate(metadata['novel_classes'])}
+        return metadata
+
     def init_idmaps(self, metadata):
         idmap_global = metadata['thing_dataset_id_to_contiguous_id']
         idmap_global_reversed = {v: k for k, v in idmap_global.items()}
@@ -876,7 +894,7 @@ class TwoStageROIHeads(ROIHeads):
                 proposals_base.append(self.proposal_filter(proposal, fg_inds_local, novel = False))
 
             proposals_novel.append(self.proposal_filter(proposal, bg_inds_local, novel = True))
-        
+            
             # print('iter')
             # embed()
 
@@ -1104,7 +1122,7 @@ class TwoStageROIHeads(ROIHeads):
 
         loss_weight = None
         # loss_weight = torch.ones(pred_class_logits_novel.shape[1]).to(self.device)
-        # loss_weight[-1] = 0.3
+        # loss_weight[-1] = 0.1
 
         return outputs_novel.losses(loss_weight=loss_weight)
 

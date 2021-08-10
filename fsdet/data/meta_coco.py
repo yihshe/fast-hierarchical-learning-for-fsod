@@ -1,3 +1,4 @@
+from IPython.terminal.embed import embed
 import numpy as np
 from fvcore.common.file_io import PathManager
 from pycocotools.coco import COCO
@@ -7,6 +8,8 @@ import io
 import os
 from detectron2.data import DatasetCatalog, MetadataCatalog
 from detectron2.structures import BoxMode
+
+from .meta_coco_hda import HDAMetaInfo
 
 """
 This file contains functions to parse COCO-format annotations into dicts in "Detectron2 format".
@@ -35,6 +38,7 @@ def load_coco_json(json_file, image_root, metadata, dataset_name):
            The results do not have the "image" field.
     """
     is_shots = "shot" in dataset_name
+    
     if is_shots:
         fileids = {}
         split_dir = os.path.join("datasets", "cocosplit")
@@ -47,7 +51,9 @@ def load_coco_json(json_file, image_root, metadata, dataset_name):
             shot = dataset_name.split("_")[-1].split("shot")[0]
         # TODO the thing_classes needs to be shrinked to 60
         # and the psudo novel and base classes in the base set needs to be randomly splitted for each task
+        # TODO HDA, for few-shot dataset, the selecttion of corresponding classes happens here, stored in fileids, each entry coresponds to a class
         for idx, cls in enumerate(metadata["thing_classes"]):
+            # NOTE if thing_classes is super class, then include all its child class at a given order
             json_file = os.path.join(
                 split_dir, "full_box_{}shot_{}_trainval.json".format(shot, cls)
             )
@@ -65,6 +71,7 @@ def load_coco_json(json_file, image_root, metadata, dataset_name):
         # sort indices for reproducible results
         img_ids = sorted(list(coco_api.imgs.keys()))
         imgs = coco_api.loadImgs(img_ids)
+        # NOTE anns here is only the annotation part of the json file
         anns = [coco_api.imgToAnns[img_id] for img_id in img_ids]
         imgs_anns = list(zip(imgs, anns))
 
@@ -89,11 +96,15 @@ def load_coco_json(json_file, image_root, metadata, dataset_name):
                     assert anno["image_id"] == image_id
                     assert anno.get("ignore", 0) == 0
 
+                    # NOTE HDA the category id here is still the id of child class
                     obj = {key: anno[key] for key in ann_keys if key in anno}
 
                     obj["bbox_mode"] = BoxMode.XYWH_ABS
                     # TODO notice the transfer from category id to continuous id
                     # one record for one annotation, as a dict in the list 'dicts'
+                    # TODO HDA, map of class id used in gt, category_id of child -> super_category_id 
+                    # -> corrsponding continuous id that can be used as gt, also change the thing_classes to contain super class
+                    # NOTE even in fewshot dataset no need for mapping the child id to parent id, the id_map needs revision to map it to contiguous id correctly
                     obj["category_id"] = id_map[obj["category_id"]]
                     record["annotations"] = [obj]
                     dicts.append(record)
@@ -119,7 +130,7 @@ def load_coco_json(json_file, image_root, metadata, dataset_name):
                 obj = {key: anno[key] for key in ann_keys if key in anno}
 
                 obj["bbox_mode"] = BoxMode.XYWH_ABS
-                # TODO for test id map is thing_class map, but not in novel classes
+
                 if obj["category_id"] in id_map:
                     obj["category_id"] = id_map[obj["category_id"]]
                     # difference, every recorde corresponds to one image with several annotations
@@ -128,7 +139,6 @@ def load_coco_json(json_file, image_root, metadata, dataset_name):
             dataset_dicts.append(record)
 
     return dataset_dicts
-
 
 def register_meta_coco(name, metadata, imgdir, annofile):
     DatasetCatalog.register(

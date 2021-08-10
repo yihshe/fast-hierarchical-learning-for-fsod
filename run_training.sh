@@ -28,13 +28,19 @@ conda activate pytcu10
 # python3 -m tools.ckpt_surgery \
 #         --src1 checkpoints/voc/faster_rcnn/faster_rcnn_R_101_FPN_base1/model_final.pth \
 #         --method randinit \
-#         --save-dir checkpoints_temp/voc/faster_rcnn/faster_rcnn_R_101_FPN_all1
+#         # --save-dir checkpoints_temp/voc/faster_rcnn/faster_rcnn_R_101_FPN_all2
+
 # python3 -m tools.ckpt_surgery \
 #         --src1 checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_base/model_final.pth \
 #         --method randinit \
 #         --save-dir checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_all \
 #         --coco \
 #         --two-stage-roi-heads
+
+python3 -m tools.ckpt_surgery \
+        --src1 checkpoints/voc/faster_rcnn/faster_rcnn_R_101_FPN_base3/model_final.pth \
+        --method randinit \
+        --two-stage-roi-heads
 
 # Running SGD as same as the original implementation
 # python3 -m tools.train_net --num-gpus 1 \
@@ -46,9 +52,9 @@ conda activate pytcu10
 #         --config-file configs/COCO-detection_CG/faster_rcnn_R_101_FPN_ft_all_1shot.yaml \
 #         # --opts MODEL.WEIGHTS checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_ft_novel_1shot_combine/model_reset_combine.pth
 
-python3 -m tools.train_net_modified --num-gpus 1 \
-        --config-file configs/COCO-detection_CG/faster_rcnn_R_101_FPN_ft_novel_1shot.yaml \
-        --opts MODEL.WEIGHTS checkpoints_temp/CG_L2_RTS/coco/cg2_shot1_novel_iter20_metaweight_novel_newton0_iter1000/faster_rcnn/faster_rcnn_R_101_FPN_ft_novel_1shot/model_0000015.pth
+# python3 -m tools.train_net_modified --num-gpus 1 \
+#         --config-file configs/COCO-detection_CG/faster_rcnn_R_101_FPN_ft_novel_1shot.yaml \
+#         --opts MODEL.WEIGHTS checkpoints_temp/CG_L2_RTS/coco/cg2_shot1_novel_iter20_metaweight_test/faster_rcnn/faster_rcnn_R_101_FPN_ft_novel_1shot/model_init.pth
 
 # python3 -m tools.train_net_modified --num-gpus 1 \
 #         --config-file configs/PascalVOC-detection_CG/split1/faster_rcnn_R_101_FPN_ft_all1_1shot.yaml \

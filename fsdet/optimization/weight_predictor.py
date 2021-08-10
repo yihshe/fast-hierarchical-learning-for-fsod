@@ -29,7 +29,6 @@ class WeightPredictor(nn.Module):
         self.bbox_bias_pred_f1 = nn.Linear(feat_size, feat_size)
         self.bbox_bias_pred_f2 = nn.Linear(feat_size, box_dim)
 
-
         self.feat_size = feat_size
 
         self.scale_factor = 0.1
@@ -76,4 +75,65 @@ class WeightPredictor(nn.Module):
 
         x = x.view(-1)
         return x
+
+class WeightPredictor2(nn.Module):
+    def __init__(self, feat_size, box_dim=4):
+        super(WeightPredictor2, self).__init__()
+        self.cls_score_weight = nn.Parameter(torch.rand(21, feat_size))
+        torch.nn.init.normal_(self.cls_score_weight, 0, 0.01)
+        self.cls_score_bias = nn.Parameter(torch.zeros(21))
+
+        self.bbox_pred_weight = nn.Parameter(torch.rand(80, feat_size))
+        torch.nn.init.normal_(self.bbox_pred_weight, 0, 0.01)
+        self.bbox_pred_bias = nn.Parameter(torch.zeros(80))
+
+    def forward(self, x):
+        return TensorList([self.cls_score_weight, self.cls_score_bias, self.bbox_pred_weight, self.bbox_pred_bias])
+
+class WeightPredictor3(nn.Module):
+    def __init__(self, feat_size, box_dim=4):
+        super(WeightPredictor3, self).__init__()
+
+        self.cls_weight_pred_f1 = nn.Linear(feat_size, feat_size)
+        self.cls_weight_pred_f2 = nn.Linear(feat_size, feat_size)
+
+        self.bbox_weight_pred_f1 = nn.Linear(feat_size, feat_size*box_dim)
+        self.bbox_weight_pred_f2 = nn.Linear(feat_size*box_dim, feat_size*box_dim)
+
+        self.bbox_bias_pred_f1 = nn.Linear(feat_size, box_dim)
+        self.bbox_bias_pred_f2 = nn.Linear(box_dim, box_dim)
+
+        self.feat_size = feat_size
+
+        self.scale_factor = 0.1
+
+    def forward(self, x):
+        cls_score_weight = self._forward_cls_weight_pred(x)
+        bbox_pred_weight = self._forward_bbox_weight_pred(x)
+        bbox_pred_bias = self._forward_bbox_bias_pred(x).view(-1)
+        return TensorList([cls_score_weight, bbox_pred_weight, bbox_pred_bias])*self.scale_factor
+
+    def _forward_cls_weight_pred(self, x):
+        x = F.relu(self.cls_weight_pred_f1(x))
+        x = self.cls_weight_pred_f2(x)
+        # x = self.cls_weight_pred_f1(x)
+
+        return x
+
+    def _forward_bbox_weight_pred(self, x):
+        x = F.relu(self.bbox_weight_pred_f1(x))
+        x = self.bbox_weight_pred_f2(x)
+        # x = self.bbox_weight_pred_f1(x)
+
+        x = x.view(-1, self.feat_size)
+        return x
+
+    def _forward_bbox_bias_pred(self, x):
+        x = F.relu(self.bbox_bias_pred_f1(x))
+        x = self.bbox_bias_pred_f2(x)
+        # x = self.bbox_bias_pred_f1(x)
+
+        x = x.view(-1)
+        return x
+
 

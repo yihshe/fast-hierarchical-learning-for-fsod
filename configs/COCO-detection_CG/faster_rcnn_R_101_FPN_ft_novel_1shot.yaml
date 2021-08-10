@@ -24,22 +24,25 @@ SOLVER:
   IMS_PER_BATCH_FEAT_EXTRACT: 10
   BASE_LR: 0.01
   STEPS: (10000,)
-  MAX_ITER: 300
+  MAX_ITER: 500
   # CHECKPOINT_PERIOD: 500
-  CHECKPOINT_PERIOD: 2
+  CHECKPOINT_PERIOD: 5
   WARMUP_ITERS: 0
 # add
 DATALOADER:
   ASPECT_RATIO_GROUPING: False
 # add
 CG_PARAMS:
-  NUM_NEWTON_ITER: 20
+  NUM_NEWTON_ITER: 30
   NUM_CG_ITER: 2
+  INIT_HESSIAN_REG: 0.4
+  HESSIAN_REG_FACTOR: 0.9
+  # AUGMENTATION: True
   # REGULARIZATION_TYPE: 'scalar rts'
   # LOSS_REG: 10.0
   # PRED_INIT_WEIGHT: True
-  # WEIGHT_PREDICTOR_PATH: 'checkpoints_temp/CG_L2_RTS_meta/coco_meta_weight_iter1000_lr1e-2_newton0/faster_rcnn_R_101_FPN_ft_novel_1shot/weight_predictor_iter999.pt'
+  # WEIGHT_PREDICTOR_PATH: 'checkpoints_temp/CG_L2_meta_weight_retrained/coco_meta_weight_iter1000_lr1e-2_newton0/faster_rcnn_R_101_FPN_ft_all_1shot/weight_predictor_iter999.pt'
   
-# OUTPUT_DIR: "checkpoints_temp/CG_L2_RTS/coco/sgd2_shot1_novel_iter300_metaweight_novel_newton0_iter1000_cg_iter16_exp2/faster_rcnn/faster_rcnn_R_101_FPN_ft_novel_1shot"
-OUTPUT_DIR: "checkpoints_temp/CG_L2_RTS/coco/cg2_shot1_novel_iter20_sgdweightseed10_novel_iter100/faster_rcnn/faster_rcnn_R_101_FPN_ft_novel_1shot"
+OUTPUT_DIR: "checkpoints_temp/CG_L2_RTS/coco/cg2_shot1_novel_iter30_hessian/faster_rcnn/faster_rcnn_R_101_FPN_ft_novel_1shot"
+# OUTPUT_DIR: "checkpoints_temp/CG_L2_RTS/coco/cg2_shot1_novel_iter20_sgdweightseed10_novel_iter100/faster_rcnn/faster_rcnn_R_101_FPN_ft_novel_1shot"
 # OUTPUT_DIR: "checkpoints_temp/CG_L2_RTS/coco/sgd2_shot1_novel_iter500_seed10/faster_rcnn/faster_rcnn_R_101_FPN_ft_novel_1shot"

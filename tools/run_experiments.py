@@ -78,6 +78,7 @@ def get_config(seed, shot):
     config file that is used for training/evaluation.
     You can extend/modify this function to fit your use-case.
     """
+    # NOTE fix and shot first and iterate over seed
     if args.coco:
         # COCO
         assert args.two_stage, 'Only supports novel weights for COCO now'
@@ -85,6 +86,7 @@ def get_config(seed, shot):
         if args.novel_finetune:
             # Fine-tune novel classifier
             ITERS = {
+                # NOTE step and max iter
                 1: (10000, 500),
                 2: (10000, 1500),
                 3: (10000, 1500),
@@ -106,9 +108,11 @@ def get_config(seed, shot):
                 30: (216000, 240000),
             }
             mode = 'all'
+
         split = temp_split = ''
         temp_mode = mode
 
+        # NOTE to be modified the path of config and the path for output
         config_dir = 'configs/COCO-detection'
         ckpt_dir = 'checkpoints/coco/faster_rcnn'
         base_cfg = '../../Base-RCNN-FPN.yaml'
@@ -127,7 +131,8 @@ def get_config(seed, shot):
         mode = 'all{}'.format(args.split)
         temp_split = 'split1'
         temp_mode = 'all1'
-
+        
+        # NOTE where the template config file should be stored in config_dir (1shot)
         config_dir = 'configs/PascalVOC-detection'
         ckpt_dir = 'checkpoints/voc/faster_rcnn'
         base_cfg = '../../../Base-RCNN-FPN.yaml'
@@ -136,17 +141,26 @@ def get_config(seed, shot):
     fc = '_fc' if args.fc else ''
     unfreeze = '_unfreeze' if args.unfreeze else ''
     # Read an example config file for the config parameters
+    # NOTE the example config file needs to be edited for CG or HDA
+    # NOTE temp_mode, novel, all, all1 as template
     temp = os.path.join(
         temp_split, 'faster_rcnn_R_101_FPN_ft{}_{}_1shot{}'.format(
             fc, temp_mode, unfreeze)
     )
     config = os.path.join(args.root, config_dir, temp + '.yaml')
 
+    # NOTE as the folder name for output, the number of shot needs to be changed
     prefix = 'faster_rcnn_R_101_FPN_ft{}_{}_{}shot{}{}'.format(
         fc, mode, shot, unfreeze, args.suffix)
 
+    # NOTE dir to output the model ckpt
+    # every seed folder in ckpt will contain the result folder for different shot (named by prefix)
+    # seed0 (seed1 seed2 ...), all1_shot1 2 3, all2_shot 1 2 3 
     output_dir = os.path.join(args.root, ckpt_dir, seed_str)
     os.makedirs(output_dir, exist_ok=True)
+    # NOTE dir to save the config will contain the cfg for different shot 
+    # every seed folder in configs will contain the 
+    # split1, seed0 (seed1 seed2 ...), all1_shot1 all1_shot2 ...
     save_dir = os.path.join(
         args.root, config_dir, split, seed_str,
     )
@@ -158,7 +172,10 @@ def get_config(seed, shot):
     configs['DATASETS']['TRAIN'] = make_tuple(configs['DATASETS']['TRAIN'])
     configs['DATASETS']['TEST'] = make_tuple(configs['DATASETS']['TEST'])
     if args.coco and not args.novel_finetune:
+        # NOTE used for tfa cg (novel weights are different for different seed, but with same base weihgts)
         ckpt_path = os.path.join(output_dir, prefix, 'model_reset_combine.pth')
+        # NOTE create the combined model if it doest not exist for the tfa coco (with cg)
+        # for HDA, the model should be randomly initialized without the combination below
         if not os.path.exists(ckpt_path):
             src2 = os.path.join(
                 output_dir, 'faster_rcnn_R_101_FPN_ft_novel_{}shot{}'.format(
@@ -176,7 +193,11 @@ def get_config(seed, shot):
             run_cmd(combine_cmd)
             assert os.path.exists(ckpt_path)
         configs['MODEL']['WEIGHTS'] = ckpt_path
+
     elif not args.coco:
+        # NOTE to use randinit weight, to make the base1,2,3/model_reset_surgery.pth be prepared
+        # for coco, only the 1 surgery model need to be prepared (tfa)
+        # for HDA, prepare 1 surgery_ts (only 1 split)
         configs['MODEL']['WEIGHTS'] = configs['MODEL']['WEIGHTS'].replace(
             'base1', 'base' + str(args.split))
         for dset in ['TRAIN', 'TEST']:
@@ -184,6 +205,8 @@ def get_config(seed, shot):
                 configs['DATASETS'][dset][0].replace(
                     temp_mode, 'all' + str(args.split)),
             )
+    # NOTE training set and test set are speficied by the split, training set is further specified by shot and seed   
+    # TODO change the number of Newton iter for differet shots if needed (for 30 shots, test first to determine the number of iter)
     configs['DATASETS']['TRAIN'] = (
         configs['DATASETS']['TRAIN'][0].replace(
             '1shot', str(shot) + 'shot'

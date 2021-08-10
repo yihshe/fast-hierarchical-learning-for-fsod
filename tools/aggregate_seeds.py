@@ -45,8 +45,10 @@ def main(args):
         unfreeze = '_unfreeze'
     else:
         unfreeze = '_randnovel' if not args.coco else ''
+    # TODO aggregate seeds for a specific shot
     for i in range(args.seeds):
         seed = 'seed{}/'.format(i) if i != 0 else ''
+        # TODO change the prefix of the path here to the specific TFA and HDA
         prefix = 'checkpoints/{}/faster_rcnn/{}'.format(dataset, seed)
         prefix += 'faster_rcnn_R_101_FPN_ft{}_all'.format(fc)
         if args.coco:

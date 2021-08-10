@@ -98,6 +98,10 @@ class GradientMask():
         
         else:
             # VOC
+            self.BASE_CLASSES = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14]
+            self.NOVEL_CLASSES = [15,16,17,18,19]
+            self.ALL_CLASSES = sorted(self.BASE_CLASSES + self.NOVEL_CLASSES)
+            self.IDMAP = {v:i for i, v in enumerate(self.ALL_CLASSES)}
             self.TAR_SIZE = 20
 
 

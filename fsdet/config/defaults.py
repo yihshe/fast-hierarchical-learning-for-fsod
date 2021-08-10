@@ -15,6 +15,9 @@ _CC.MODEL.ROI_HEADS.CLS_SCORE_LARGE_BIAS = False
 _CC.MODEL.ROI_HEADS.OUTPUT_LAYER = "FastRCNNOutputLayers"
 # scale of cosine similarity (set to -1 for learnable scale)
 _CC.MODEL.ROI_HEADS.COSINE_SCALE = 20.0
+# Specify the number of base and novel classes for Hierarchical Detection Approach
+_CC.MODEL.ROI_HEADS.NUM_CLASSES_BASE = None 
+_CC.MODEL.ROI_HEADS.NUM_CLASSES_NOVEL = None 
 
 # set the path for the pretrained base model weights
 _CC.MODEL.PRETRAINED_BASE_MODEL = None

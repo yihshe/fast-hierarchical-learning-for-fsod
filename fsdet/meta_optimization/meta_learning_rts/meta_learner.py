@@ -46,7 +46,7 @@ from fsdet.data import *
 from fsdet.evaluation import (
     COCOEvaluator, DatasetEvaluators, LVISEvaluator, PascalVOCDetectionEvaluator, verify_results)
 
-from fsdet.optimization import DetectionLossProblem, GradientMask, WeightPredictor, FeatureProjector
+from fsdet.optimization import DetectionLossProblem, GradientMask, WeightPredictor, FeatureProjector, WeightPredictor2
 from fsdet.meta_optimization.task.build import TaskSampler, TaskDataset
 from pytracking.libs.tensorlist import TensorList
 from .meta_inference import MetaCGTrainer
@@ -110,7 +110,7 @@ class MetaLearner(TrainerBase):
         # for param in self.hyper_params.keys():
         #     self.hyper_params[param].requires_grad = True
 
-        self.weight_predictor = WeightPredictor(cfg.META_PARAMS.WEIGHT_PREDICTOR.FEAT_SIZE, cfg.META_PARAMS.WEIGHT_PREDICTOR.BOX_DIM)
+        self.weight_predictor = WeightPredictor2(cfg.META_PARAMS.WEIGHT_PREDICTOR.FEAT_SIZE, cfg.META_PARAMS.WEIGHT_PREDICTOR.BOX_DIM)
         self.weight_predictor.to(self.device)
         # self.weight_predictor = None
 
@@ -240,8 +240,7 @@ class MetaLearner(TrainerBase):
 
                     # TODO also save the state_dict of weight predictor module, using checkpointer function
                     # how to save all learned params in an unified framework, to be discussed 
-                    # if (self.iter+1) % 200 == 0:
-                    if (self.iter+1) % 50 == 0:
+                    if (self.iter+1) % 100 == 0:
                         # torch.save(list(self.hyper_params['lambda'].cpu()), os.path.join(self.cfg.OUTPUT_DIR, 'lambda_params_iter{}.pt'.format(self.iter)))
                         torch.save(self.weight_predictor.state_dict(), os.path.join(self.cfg.OUTPUT_DIR, 'weight_predictor_iter{}.pt'.format(self.iter)))
                         # torch.save(self.feature_projector.state_dict(), os.path.join(self.cfg.OUTPUT_DIR, 'feature_projector_iter{}.pt'.format(self.iter)))

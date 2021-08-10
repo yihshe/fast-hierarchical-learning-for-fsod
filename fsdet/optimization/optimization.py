@@ -1,3 +1,5 @@
+from detectron2.structures.boxes import Boxes
+from detectron2.structures.instances import Instances
 import torch
 import torch.autograd
 import math 
@@ -20,9 +22,17 @@ class DetectionLossProblem(MinimizationProblem):
     """
     Compute losses given the model and data
     """
-    def __init__(self, proposals, box_features, regularization:str = None, mask:TensorList = None, base_params:dict = None, reg = None):
-        self.proposals = proposals
-        self.box_features = box_features
+    def __init__(self, proposals, box_features, regularization:str = None, mask:TensorList = None, base_params:dict = None, reg = None, augmentation:bool = False, bg_class_id = None):
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        self.augmentation = augmentation
+        # TODO this augmentation is now only for HDA, not TFA given the filtering of fg abd bg
+        if self.augmentation:
+            self.fg_proposals, self.fg_box_features, self.bg_proposals, self.bg_box_features = self.fg_proposals_filter(proposals, box_features, bg_class_id=bg_class_id)
+            del proposals, box_features
+            torch.cuda.empty_cache()
+        else:
+            self.proposals, self.box_features = proposals, box_features
+            
         self.loss_dict = None
         self.regularization = regularization
         # self.regularization = False
@@ -34,27 +44,30 @@ class DetectionLossProblem(MinimizationProblem):
         self.param_names = ['roi_heads.box_predictor.cls_score.weight', 
                             'roi_heads.box_predictor.bbox_pred.weight',
                             'roi_heads.box_predictor.bbox_pred.bias']
+        
 
-    def __call__(self, model: GeneralizedRCNN, weights: TensorList = None, augmentation: bool = False) -> TensorList:
-        # TODO add noise, drop out, instance padding here before passing it to loss
-        if augmentation:
-            box_features, proposals = self.feature_augmentation(self.box_features, self.proposals)
+    def __call__(self, model: GeneralizedRCNN, weights: TensorList = None) -> TensorList:
+        if self.augmentation:
+            # TODO for running aggregation, test whether this still works for TFA (augment fg only)
+            # Or if it with meta learned weights and lambda, then do not apply augmentation.
+            fg_proposals, fg_box_features = self.feature_augmentation(self.fg_proposals, self.fg_box_features, pseudo_shots=5)
+            # bg_proposals, bg_box_features = self.feature_augmentation(self.bg_proposals, self.bg_box_features, pseudo_shots=5)
+            # sampled_bg_proposals, sampled_bg_box_features = self.bg_proposal_sampler(self.bg_proposals, self.bg_box_features, samples_num=150000)
+            proposals = [*self.bg_proposals, *fg_proposals]
+            box_features = torch.cat((self.bg_box_features, fg_box_features), dim=0)
+
+            # proposals, box_features = self.feature_augmentation(self.proposals, self.box_features)
+            # print('aug')
+            # embed()
         else:
-            box_features, proposals = self.box_features, self.proposals
+            proposals, box_features = self.proposals, self.box_features
 
         self.loss_dict = model.losses_from_features(box_features, proposals, weights)
 
         if self.regularization is not None:
-            # NOTE the annotated part below is for constraining the base weights
-            # assert self.regularization in ['scalar', 'feature wise'], "Type of regularization is incorrect!"
-            # params = [p for p in model.roi_heads.box_predictor.parameters()] if weights is None else weights
-            # self.loss_dict.update({'loss_weight': self.regularization_loss(params)}) 
-
-            # TODO rts change it for meta learning regularzing factor in RTS, weights
-            assert self.regularization in ['scalar rts']
-            params = [p for p in model.roi_heads.box_predictor.cls_score.parameters()]
-            # params = [p for p in model.roi_heads.box_predictor_novel.cls_score.parameters()]
-            self.loss_dict.update({'loss_weight': self.regularization_loss(params)})
+            assert self.regularization in ['scalar', 'feature wise'], "Type of regularization is incorrect!"
+            params = [p for p in model.roi_heads.box_predictor.parameters()] if weights is None else weights
+            self.loss_dict.update({'loss_weight': self.regularization_loss(params)}) 
 
         losses = sum(self.loss_dict.values())
         return TensorList([losses])
@@ -68,9 +81,9 @@ class DetectionLossProblem(MinimizationProblem):
                 base_weights_updated = params[idx][(self.mask[idx]==0).nonzero(as_tuple = True)]
                 if len(params[idx].shape) == 2:
                     base_weights_updated = base_weights_updated.view(-1, params[idx].shape[1])
-                # losses = losses + torch.sum(torch.square(base_weights_updated - self.base_params[param_name]))
-                losses = losses + torch.sum(torch.square(self.reg*(base_weights_updated - self.base_params[param_name])))
-            # losses = self.reg*losses
+                losses = losses + torch.sum(torch.square(base_weights_updated - self.base_params[param_name]))
+                # losses = losses + torch.sum(torch.square(self.reg*(base_weights_updated - self.base_params[param_name])))
+            losses = self.reg*losses
 
         elif self.regularization == 'feature wise':
             for idx, param_name in enumerate(self.param_names):
@@ -79,19 +92,14 @@ class DetectionLossProblem(MinimizationProblem):
                     base_weights_updated = base_weights_updated.view(-1, params[idx].shape[1])
                 losses = losses + torch.sum(torch.square(self.reg[idx]*(base_weights_updated - self.base_params[param_name])))
 
-        elif self.regularization == 'scalar rts':
-            for param in params:
-                losses = losses + torch.sum(torch.square(param))
-            losses = self.reg*losses
         return losses
 
-    def feature_augmentation(self, init_box_features, init_proposals, 
+    def feature_augmentation(self, init_proposals, init_box_features, 
                              pseudo_shots=5, noise_level=0.1, drop_rate = 0.5):
-        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         proposals = init_proposals*pseudo_shots
         box_features = init_box_features.repeat(pseudo_shots, 1)
 
-        noise = torch.empty(box_features.size()).to(device)
+        noise = torch.empty(box_features.size()).to(self.device)
         torch.nn.init.normal_(noise, mean=0, std=noise_level)
 
         box_features += noise
@@ -99,7 +107,57 @@ class DetectionLossProblem(MinimizationProblem):
 
         drop_out = torch.nn.Dropout(p=drop_rate, inplace=True)
         drop_out(box_features)
-        return box_features, proposals
+        return proposals, box_features
+
+    def fg_proposals_filter(self, proposals, box_features, bg_class_id):
+        # NOTE select the foreground proposals and corresponding box features for feature augmentation
+        num_preds_per_image = torch.tensor([len(p) for p in proposals])
+        gt_classes_per_image = [p.gt_classes for p in proposals]
+        fg_inds = torch.tensor([]).to(self.device)
+        fg_proposals = list([])
+        bg_inds = torch.tensor([]).to(self.device)
+        bg_proposals = list([])
+        for i, (proposal, num_preds, gt_classes) in enumerate(zip(proposals, num_preds_per_image, gt_classes_per_image)):
+            fg_inds_local = torch.arange(num_preds)[gt_classes!=bg_class_id].to(self.device)
+            fg_inds = torch.cat((fg_inds, torch.sum(num_preds_per_image[:i])+fg_inds_local)).long()
+            bg_inds_local = torch.arange(num_preds)[gt_classes==bg_class_id].to(self.device)
+            bg_inds = torch.cat((bg_inds, torch.sum(num_preds_per_image[:i])+bg_inds_local)).long()
+
+            if len(fg_inds_local)>0:
+                fg_proposals.append(self.single_proposal_filter(proposal, fg_inds_local))
+
+            if len(bg_inds_local)>0:
+                bg_proposals.append(self.single_proposal_filter(proposal, bg_inds_local))
+        
+        fg_box_features = box_features[fg_inds]
+        bg_box_features = box_features[bg_inds]
+
+        return fg_proposals, fg_box_features, bg_proposals, bg_box_features
+
+    def single_proposal_filter(self, proposal, inds):
+        filtered_proposal = Instances(proposal.image_size)
+        filtered_proposal.proposal_boxes = Boxes(proposal.proposal_boxes.tensor[inds])
+        filtered_proposal.objectness_logits = proposal.objectness_logits[inds]
+        filtered_proposal.gt_boxes = Boxes(proposal.gt_boxes.tensor[inds])
+        filtered_proposal.gt_classes = proposal.gt_classes[inds]
+
+        return filtered_proposal
+        
+    def bg_proposal_sampler(self, proposals, box_features, samples_num=10):
+        num_preds = box_features.shape[0]
+        num_preds_per_image = [len(p) for p in proposals]
+        sample_inds, _ = torch.randperm(num_preds)[:samples_num].sort()
+        sample_bool = torch.zeros(num_preds, dtype=torch.bool)
+        sample_bool[sample_inds] = True
+        sample_bool_list = sample_bool.split(num_preds_per_image, dim=0)
+        sampled_proposals = list([])
+        for i, (proposal, sample_bool_local) in enumerate(zip(proposals, sample_bool_list)):
+            if torch.sum(sample_bool_local) == 0:
+                continue
+            sampled_proposals.append(self.single_proposal_filter(proposal, sample_bool_local))
+        sampled_box_features = box_features[sample_inds]
+        return sampled_proposals, sampled_box_features
+
             
 
 
@@ -107,7 +165,7 @@ class DetectionLossProblem(MinimizationProblem):
 
 class DetectionNewtonCG(ConjugateGradientBase):
     """Newton with Conjugate Gradient. Handels minimization problems in detection."""
-    def __init__(self, problem: DetectionLossProblem, model: GeneralizedRCNN, augmentation = False,
+    def __init__(self, problem: DetectionLossProblem, model: GeneralizedRCNN,
                  novel_init_weights=None, IDMAP = None, NOVEL_CLASSES = None, 
                  init_hessian_reg = 0.0, hessian_reg_factor = 1.0, cg_eps = 0.0, fletcher_reeves = True, standard_alpha = True, direction_forget_factor = 0,
                  debug = False, analyze = False, plotting = False, fig_num=(10, 11, 12)):
@@ -127,13 +185,17 @@ class DetectionNewtonCG(ConjugateGradientBase):
         self.layer_names = list(self.state_dict.keys())
         self.x = TensorList([self.state_dict[k].detach().clone() for k in self.state_dict.keys()])
         self.x_eval = TensorList([self.state_dict[k].detach().clone() for k in self.state_dict.keys()])
-        self.augmentation = augmentation
+        # self.augmentation = augmentation
         
         self.analyze_convergence = analyze
         self.plotting = plotting
         self.fig_num = fig_num
 
+        # TODO change this to a higher value to constrain it at the start, by giving a higher hessian reg factor, stable and converge quickly
+        # TODO compare the regularizer with the meta learned weights
+        # TODO rescaling or normalization of the meta weights
         self.hessian_reg = init_hessian_reg
+        # TODO hessian decay 0.9
         self.hessian_reg_factor = hessian_reg_factor
         self.cg_eps = cg_eps
         self.f0 = None
@@ -144,37 +206,39 @@ class DetectionNewtonCG(ConjugateGradientBase):
         self.gradient_mags = torch.zeros(0)
     
     def overwrite_novel_weights(self, model, novel_init_weights, IDMAP, NOVEL_CLASSES):
-        # state_dict = model.roi_heads.box_predictor.state_dict()
-        # layer_names = list(state_dict.keys())
-        # x = TensorList([state_dict[k].detach().clone() for k in state_dict.keys()])
-
-        # for idx in range(len(x)):
-        #     for i, c in enumerate(NOVEL_CLASSES):
-        #         if idx == 0:
-        #             x[idx][IDMAP[c]] = novel_init_weights[idx][i]
-        #         else:
-        #             x[idx][IDMAP[c]*4:(IDMAP[c]+1)*4] = novel_init_weights[idx][i*4:(i+1)*4]
-        
-        # for i in range(len(layer_names)):
-        #         state_dict[layer_names[i]] = x[i].detach()
-
-        # model.roi_heads.box_predictor.load_state_dict(state_dict) 
-
-        # NOTE for test on CG init weights only
         state_dict = model.roi_heads.box_predictor.state_dict()
         layer_names = list(state_dict.keys())
         x = TensorList([state_dict[k].detach().clone() for k in state_dict.keys()])
 
-        # x[0][:-1] = novel_init_weights[0][:]
-        # x[2][:] = novel_init_weights[1][:]
-        # x[3][:] = novel_init_weights[2][:] 
         for idx in range(len(x)):
-            x[idx][:] = novel_init_weights[idx][:]
-
+            for i, c in enumerate(NOVEL_CLASSES):
+                if idx == 0:
+                    x[idx][IDMAP[c]] = novel_init_weights[idx][i]
+                else:
+                    x[idx][IDMAP[c]*4:(IDMAP[c]+1)*4] = novel_init_weights[idx][i*4:(i+1)*4]
+        
         for i in range(len(layer_names)):
                 state_dict[layer_names[i]] = x[i].detach()
 
-        model.roi_heads.box_predictor.load_state_dict(state_dict)
+        model.roi_heads.box_predictor.load_state_dict(state_dict) 
+
+        # NOTE for test on TFA CG init weights to HDA novel layers only
+        # state_dict = model.roi_heads.box_predictor.state_dict()
+        # layer_names = list(state_dict.keys())
+        # x = TensorList([state_dict[k].detach().clone() for k in state_dict.keys()])
+
+        # x[0][:-1] = novel_init_weights[0][:]
+        # x[2][:] = novel_init_weights[1][:]
+        # x[3][:] = novel_init_weights[2][:] 
+
+        # NOTE for test on TFA CG init weights to novel model only
+        # for idx in range(len(x)):
+        #     x[idx][:] = novel_init_weights[idx][:]
+
+        # for i in range(len(layer_names)):
+        #         state_dict[layer_names[i]] = x[i].detach()
+
+        # model.roi_heads.box_predictor.load_state_dict(state_dict)
 
         # print('overwrite')
         # embed()
@@ -204,6 +268,7 @@ class DetectionNewtonCG(ConjugateGradientBase):
 
         for cg_iter in num_cg_iter:
             self.run_newton_iter(cg_iter)
+            # TODO NOTE reg 1.0, factor 0.9 for decay, experiment with reg
             self.hessian_reg *= self.hessian_reg_factor
 
         # why here calculate the loss again, duplicate with the last step run_CG
@@ -252,7 +317,7 @@ class DetectionNewtonCG(ConjugateGradientBase):
         assert self.model.training, "[SimpleTrainer] model was changed to eval mode!"
         
         # Get the loss from the model
-        self.f0 = self.problem(self.model, augmentation=self.augmentation)
+        self.f0 = self.problem(self.model)
         loss_dict = self.problem.loss_dict
         if self.debug and not self.analyze_convergence:
             self.losses = torch.cat((self.losses, self.f0[0].detach().cpu().view(-1)))
@@ -337,7 +402,7 @@ class DetectionNewtonCG(ConjugateGradientBase):
 
 class MetaDetectionNewtonCG(ConjugateGradientBase):
     """Newton with Conjugate Gradient. Handels minimization problems in detection."""
-    def __init__(self, problem: DetectionLossProblem, model: GeneralizedRCNN, augmentation = False,
+    def __init__(self, problem: DetectionLossProblem, model: GeneralizedRCNN,
                  novel_init_weights=None, IDMAP = None, NOVEL_CLASSES = None, 
                  init_hessian_reg = 0.0, hessian_reg_factor = 1.0, cg_eps = 0.0, fletcher_reeves = True, standard_alpha = True, direction_forget_factor = 0,
                  debug = False, analyze = False, plotting = False, fig_num=(10, 11, 12)):
@@ -349,7 +414,6 @@ class MetaDetectionNewtonCG(ConjugateGradientBase):
         self.layer_names = list(self.state_dict.keys())
         self.x = TensorList([self.state_dict[k].detach().clone() for k in self.state_dict.keys()])
         # self.x.requires_grad_(True)
-        self.augmentation = augmentation
     
         if novel_init_weights is not None:
             self.overwrite_novel_weights(novel_init_weights, IDMAP, NOVEL_CLASSES)
@@ -414,7 +478,7 @@ class MetaDetectionNewtonCG(ConjugateGradientBase):
         self.x.requires_grad_(True)
         assert self.model.training, "[SimpleTrainer] model was changed to eval mode!"
         # self.f0 = self.problem(self.model)
-        self.f0 = self.problem(self.model, self.x, augmentation = self.augmentation)
+        self.f0 = self.problem(self.model, self.x)
 
         loss_dict = self.problem.loss_dict
         # Gradient of loss

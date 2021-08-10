@@ -40,7 +40,7 @@ META_PARAMS:
   MODEL_WEIGHTS: "checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_base/model_reset_remove.pth"
   # REGULARIZATION_TYPE: 'feature wise'
   # INIT_LOSS_REG: 1.0
-  NUM_ITER: 500
+  NUM_ITER: 1000
   TASKS_PER_BATCH: 1
   SUPPORT_SET_SHOTS: 1
   QUERY_SET_SHOTS: 1
@@ -51,4 +51,4 @@ META_PARAMS:
     MOMENTUM: 0.9
     NESTEROV: False
     WEIGHT_DECAY: 0.0001
-OUTPUT_DIR: "checkpoints_temp/CG_L2_RTS_meta/coco_meta_weight_iter500_lr1e-2_newton0/faster_rcnn_R_101_FPN_ft_novel_1shot"
+OUTPUT_DIR: "checkpoints_temp/CG_L2_RTS_meta/coco_meta_initweight_iter1000_lr1e-2_newton0/faster_rcnn_R_101_FPN_ft_novel_1shot"

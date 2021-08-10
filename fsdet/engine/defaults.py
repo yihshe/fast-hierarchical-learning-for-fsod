@@ -578,3 +578,4 @@ class DefaultTrainer(SimpleTrainer):
         if len(results) == 1:
             results = list(results.values())[0]
         return results
+

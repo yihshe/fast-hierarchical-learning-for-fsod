@@ -298,6 +298,8 @@ class MetaCGTrainer(TrainerBase):
             novel_id = self.IDMAP[novel_class]
             novel_gt_box_features[idx] = torch.mean(gt_box_features[gt_classes==novel_id],dim=0)
         
+        # print('novel init weights')
+        # embed()
         # return novel_gt_box_features.detach_()
         return novel_gt_box_features
 
