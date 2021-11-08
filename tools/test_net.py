@@ -32,6 +32,15 @@ from detectron2.engine import hooks, launch
 from fsdet.evaluation import (
     COCOEvaluator, DatasetEvaluators, LVISEvaluator, PascalVOCDetectionEvaluator, verify_results)
 
+from fsdet.evaluation import (
+    DatasetEvaluator,
+    inference_on_dataset,
+    print_csv_format,
+    verify_results,
+)
+from fsdet.data import build_detection_test_loader_with_gt
+
+from IPython import embed
 
 class Trainer(DefaultTrainer):
     """
@@ -58,7 +67,7 @@ class Trainer(DefaultTrainer):
                 COCOEvaluator(dataset_name, cfg, True, output_folder)
             )
         if evaluator_type == "pascal_voc":
-            return PascalVOCDetectionEvaluator(dataset_name)
+            return PascalVOCDetectionEvaluator(dataset_name, output_folder)
         if evaluator_type == "lvis":
             return LVISEvaluator(dataset_name, cfg, True, output_folder)
         if len(evaluator_list) == 0:
@@ -70,6 +79,69 @@ class Trainer(DefaultTrainer):
         if len(evaluator_list) == 1:
             return evaluator_list[0]
         return DatasetEvaluators(evaluator_list)
+
+    @classmethod
+    def test(cls, cfg, model, evaluators=None, with_gt = False, results_path = None):
+        """
+        Args:
+            cfg (CfgNode):
+            model (nn.Module):
+            evaluators (list[DatasetEvaluator] or None): if None, will call
+                :meth:`build_evaluator`. Otherwise, must have the same length as
+                `cfg.DATASETS.TEST`.
+
+        Returns:
+            dict: a dict of result metrics
+        """
+        logger = logging.getLogger(__name__)
+        if isinstance(evaluators, DatasetEvaluator):
+            evaluators = [evaluators]
+        if evaluators is not None:
+            assert len(cfg.DATASETS.TEST) == len(
+                evaluators
+            ), "{} != {}".format(len(cfg.DATASETS.TEST), len(evaluators))
+
+        results = OrderedDict()
+        for idx, dataset_name in enumerate(cfg.DATASETS.TEST):
+            # TODO modify the mapper of test loader to make it also attach the instance for each image
+            if with_gt is True:
+                data_loader = build_detection_test_loader_with_gt(cfg, dataset_name)
+            else:
+                data_loader = cls.build_test_loader(cfg, dataset_name)
+            # When evaluators are passed in as arguments,
+            # implicitly assume that evaluators can be created before data_loader.
+            if evaluators is not None:
+                evaluator = evaluators[idx]
+            else:
+                try:
+                    evaluator = cls.build_evaluator(cfg, dataset_name)
+                except NotImplementedError:
+                    logger.warn(
+                        "No evaluator found. Use `DefaultTrainer.test(evaluators=)`, "
+                        "or implement its `build_evaluator` method."
+                    )
+                    results[dataset_name] = {}
+                    continue
+            results_i = inference_on_dataset(model, data_loader, evaluator, with_gt = with_gt, results_path=results_path)
+            results[dataset_name] = results_i
+            if comm.is_main_process():
+                assert isinstance(
+                    results_i, dict
+                ), "Evaluator must return a dict on the main process. Got {} instead.".format(
+                    results_i
+                )
+                logger.info(
+                    "Evaluation results for {} in csv format:".format(
+                        dataset_name
+                    )
+                )
+                print_csv_format(results_i)
+
+        if len(results) == 1:
+            results = list(results.values())[0]
+        return results
+
+
 
 
 class Tester:
@@ -149,15 +221,25 @@ def main(args):
         DetectionCheckpointer(model, save_dir=cfg.OUTPUT_DIR).resume_or_load(
             ckpt_file, resume=resume
         )
-        res = Trainer.test(cfg, model)
+        # TODO if test with saved results, for the novel setting, then also save to a separate file maybe
+        # start from the inner function
+        if args.test_with_gt:
+            res = Trainer.test(cfg, model, with_gt = args.test_with_gt)
+        elif args.results_path is not None:
+            res = Trainer.test(cfg, model, results_path = args.results_path)
+        else:
+            res = Trainer.test(cfg, model)
+
+        setting = "_new_setting" if args.results_path is not None else ""
+
         if comm.is_main_process():
             verify_results(cfg, res)
             # save evaluation results in json
             os.makedirs(
-                os.path.join(cfg.OUTPUT_DIR, "inference"), exist_ok=True
+                os.path.join(cfg.OUTPUT_DIR, "inference", exist_ok=True)
             )
             with open(
-                os.path.join(cfg.OUTPUT_DIR, "inference", "res_final.json"),
+                os.path.join(cfg.OUTPUT_DIR, "inference", "res_final{}.json".format(setting)),
                 "w",
             ) as fp:
                 json.dump(res, fp)
@@ -200,7 +282,15 @@ def main(args):
 
 
 if __name__ == "__main__":
-    args = default_argument_parser().parse_args()
+    # args = default_argument_parser().parse_args()
+    parser = default_argument_parser()
+    parser.add_argument(
+        "--test-with-gt", action = "store_true", help="test with ground truth labels",
+    )
+    parser.add_argument(
+        "--results-path", type=str, default = None, help="path of the saved results to evaluate",
+    )
+    args = parser.parse_args()
     if args.eval_during_train or args.eval_all:
         args.dist_url = "tcp://127.0.0.1:{:05d}".format(
             np.random.choice(np.arange(0, 65534))

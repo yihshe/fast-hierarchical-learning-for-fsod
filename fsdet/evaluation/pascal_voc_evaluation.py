@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 
+import json
 import logging
+from fvcore.common.file_io import PathManager
 import numpy as np
 import os
 import tempfile
@@ -26,7 +28,7 @@ class PascalVOCDetectionEvaluator(DatasetEvaluator):
     the official API.
     """
 
-    def __init__(self, dataset_name):
+    def __init__(self, dataset_name, output_dir=None):
         """
         Args:
             dataset_name (str): name of the dataset, e.g., "voc_2007_test"
@@ -44,9 +46,12 @@ class PascalVOCDetectionEvaluator(DatasetEvaluator):
         self._cpu_device = torch.device("cpu")
         self._logger = logging.getLogger(__name__)
 
+        self._output_dir = output_dir
+
     def reset(self):
         self._predictions = defaultdict(list)  # class name -> list of prediction strings
-
+        self.results = list([])
+        
     def process(self, inputs, outputs):
         for input, output in zip(inputs, outputs):
             image_id = input["image_id"]
@@ -63,12 +68,34 @@ class PascalVOCDetectionEvaluator(DatasetEvaluator):
                     f"{image_id} {score:.3f} {xmin:.1f} {ymin:.1f} {xmax:.1f} {ymax:.1f}"
                 )
 
+            # TODO add the gt data here for evaluating the confusion matrices, write part of the methods
+            if instances.has("gt_classes"):
+                gt_classes = instances.gt_classes.tolist()
+                for k in range(len(instances)):
+                    result = {
+                        "image_id": image_id,
+                        "category_id": classes[k],
+                        "bbox": boxes[k],
+                        "scores": scores[k],
+                        "category_id_gt": gt_classes[k],
+                    }
+                    self.results.append(result)
+
     def evaluate(self):
         """
         Returns:
             dict: has a key "segm", whose value is a dict of "AP", "AP50", and "AP75".
         """
-        all_predictions = comm.gather(self._predictions, dst=0)
+        # NOTE save the results with gt for plotting confusion matrices
+        if len(self.results)>0:
+            assert self._output_dir is not None
+            PathManager.mkdirs(self._output_dir)
+            file_path = os.path.join(self._output_dir, "voc_instances_results.pth")
+            self._logger.info("Saving results to {}".format(file_path))
+            with PathManager.open(file_path, "wb") as f:
+                torch.save(self.results, f)
+
+        all_predictions = comm.gather(self._predictions, dst=0) 
         if not comm.is_main_process():
             return
         predictions = defaultdict(list)

@@ -59,6 +59,9 @@ from pytracking.libs.tensorlist import TensorList
 import random
 import time
 
+from fsdet.data.meta_coco_hda import HDAMetaInfo
+from fsdet.data.builtin_meta import PASCAL_VOC_ALL_CATEGORIES, PASCAL_VOC_BASE_CATEGORIES, PASCAL_VOC_NOVEL_CATEGORIES
+
 class CGTrainer(TrainerBase):
     
     def __init__(self, cfg):
@@ -318,18 +321,25 @@ class CGTrainer(TrainerBase):
             extract_time = time.perf_counter()-start
             logger.info("Extracted features from frozen layers. Time needed: {}".format(extract_time))
 
+            # count = self.proposal_count(proposals)
+            # print(count)
+            # embed()
             # torch.save(proposals, 'checkpoints_temp/voc_novel_2shot_proposals_rts_novel.pt')
             # torch.save(box_features, 'checkpoints_temp/voc_novel_2shot_box_features_rts_novel.pt')
             # proposals = torch.load('checkpoints_temp/voc_novel_2shot_proposals_rts.pt')
             # box_features = torch.load('checkpoints_temp/voc_novel_2shot_box_features_rts.pt')
-
+          
             self.problem = DetectionLossProblem(proposals, box_features, 
                                                 regularization = self.cfg.CG_PARAMS.REGULARIZATION_TYPE, 
                                                 mask = self.mask, 
                                                 base_params = copy.deepcopy(self.base_params), 
                                                 reg = self.loss_reg,
                                                 augmentation = self.cfg.CG_PARAMS.AUGMENTATION,
-                                                bg_class_id = self.cfg.MODEL.ROI_HEADS.NUM_CLASSES_NOVEL)
+                                                bg_class_id = self.cfg.MODEL.ROI_HEADS.NUM_CLASSES_NOVEL,
+                                                pseudo_shots=self.cfg.CG_PARAMS.AUG_OPTIONS.PSEUDO_SHOTS,
+                                                noise_level=self.cfg.CG_PARAMS.AUG_OPTIONS.NOISE_LEVEL,
+                                                drop_rate=self.cfg.CG_PARAMS.AUG_OPTIONS.DROP_RATE,)
+            
             self.optimizer = self.build_optimizer(self.cfg, self.model, self.problem,
                                                   novel_init_weights, self.IDMAP, self.NOVEL_CLASSES)
             
@@ -373,6 +383,8 @@ class CGTrainer(TrainerBase):
         return novel_gt_box_features.detach_()
 
     def extract_features(self, extract_gt_box_features=False):
+        # TODO LVIS, either extract one batch of data and then do optimization
+        # or extract batches of data for subset proposals and features and do optimization
         if not extract_gt_box_features:
             for batch_idx, data in enumerate(self.data_loader):
                 if batch_idx == 0:
@@ -396,6 +408,27 @@ class CGTrainer(TrainerBase):
             return proposals, box_features, gt_box_features, gt_classes
     
     
+    def proposal_count(self, proposals):
+        # NOTE only used for counting the filtered proposals in HDA approach
+        # hda_meta_info = HDAMetaInfo()
+        # idmap_novel = MetadataCatalog.get(self.cfg.DATASETS.TRAIN[0]).novel_dataset_id_to_contiguous_id
+        # idmap_novel_reversed = {v:k for k,v in idmap_novel.items()}
+        
+        id2name = {i:name for i, name in enumerate(PASCAL_VOC_NOVEL_CATEGORIES[1])}
+        bg_class_id = 5 
+        count = {}
+        for proposal in proposals:
+            if proposal.gt_classes[0] == bg_class_id:
+                continue
+            # cat_name = hda_meta_info.child_cats_id2name[idmap_novel_reversed[proposal.gt_classes[0].item()]]
+            cat_name = id2name[proposal.gt_classes[0].item()]
+            if cat_name not in count.keys():
+                count[cat_name] = sum(list(proposal.gt_classes == proposal.gt_classes[0])).item()
+            else:
+                count[cat_name] += sum(list(proposal.gt_classes == proposal.gt_classes[0])).item()
+        return count
+
+
     # TODO the run_step of meta learner should wrap the train() of CG trainer
     def run_step(self):
         self.cg_iter = self.num_cg_iter[self.iter]

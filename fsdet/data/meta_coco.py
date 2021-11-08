@@ -9,8 +9,6 @@ import os
 from detectron2.data import DatasetCatalog, MetadataCatalog
 from detectron2.structures import BoxMode
 
-from .meta_coco_hda import HDAMetaInfo
-
 """
 This file contains functions to parse COCO-format annotations into dicts in "Detectron2 format".
 """
@@ -130,7 +128,7 @@ def load_coco_json(json_file, image_root, metadata, dataset_name):
                 obj = {key: anno[key] for key in ann_keys if key in anno}
 
                 obj["bbox_mode"] = BoxMode.XYWH_ABS
-
+                
                 if obj["category_id"] in id_map:
                     obj["category_id"] = id_map[obj["category_id"]]
                     # difference, every recorde corresponds to one image with several annotations

@@ -63,8 +63,8 @@ class Trainer(DefaultTrainer):
         self.dataset = None
         
         ## define variables used for masking out gradients for pretrained weights
-        data_source = cfg.DATASETS.TRAIN[0].split('_')[0]
-        base_model = torch.load(cfg.MODEL.PRETRAINED_BASE_MODEL)
+        # data_source = cfg.DATASETS.TRAIN[0].split('_')[0]
+        # base_model = torch.load(cfg.MODEL.PRETRAINED_BASE_MODEL)
         # mask_generator = GradientMask(data_source)
         # self.mask = mask_generator.create_mask(self.model.state_dict(), base_model['model'])
 
@@ -112,14 +112,14 @@ class Trainer(DefaultTrainer):
             )
             
         # annotate this function so that the final model will not be evaluated
-        # def test_and_save_results():
-        #     self._last_eval_results = self.test(self.cfg, self.model)
-        #     return self._last_eval_results
+        def test_and_save_results():
+            self._last_eval_results = self.test(self.cfg, self.model)
+            return self._last_eval_results
 
         # Do evaluation after checkpointer, because then if it fails,
         # we can use the saved checkpoint to debug.
-        # ret.append(EvalHookFsdet(
-        #     cfg.TEST.EVAL_PERIOD, test_and_save_results, self.cfg))
+        ret.append(EvalHookFsdet(
+            cfg.TEST.EVAL_PERIOD, test_and_save_results, self.cfg))
 
         if comm.is_main_process():
             # run writers in the end, so that evaluation metrics are written
@@ -142,8 +142,14 @@ class Trainer(DefaultTrainer):
             self.data_loader_before = self.build_train_loader_feature(self.cfg, extract_features=True)
             
             start = time.perf_counter()
-
+            # NOTE, in SGD for HDA in standard setting, extract a batch of data and optimize on it.
             proposals, box_features = self.extract_features(self.model, self.data_loader_before)
+            
+            # NOTE the following code is in test
+            for i in range(4):
+                proposals_plus, box_features_plus = self.extract_features(self.model, self.data_loader_before)
+                proposals = [*proposals, *proposals_plus]
+                box_features = torch.cat((box_features, box_features_plus), dim=0)
             
             extract_time = time.perf_counter()-start
             logger.info("Extracted features from frozen layers. Time needed: {}".format(extract_time))
@@ -157,12 +163,12 @@ class Trainer(DefaultTrainer):
             # proposals = torch.load('checkpoints_temp/proposals_coco_novel_3lvbg.pt')
             # box_features = torch.load('checkpoints_temp/box_features_coco_novel_3lvbg.pt')
 
-            # self.proposals = proposals
-            # self.box_features = box_features
+            self.proposals = proposals
+            self.box_features = box_features
 
-            self.dataset = ExtractedDataset(proposals, box_features)
-            self.data_loader_after = self.build_train_loader_feature(self.cfg, dataset=self.dataset)
-            self._data_loader_after_iter = iter(self.data_loader_after)
+            # self.dataset = ExtractedDataset(proposals, box_features)
+            # self.data_loader_after = self.build_train_loader_feature(self.cfg, dataset=self.dataset)
+            # self._data_loader_after_iter = iter(self.data_loader_after)
 
             try:
                 self.before_train()
@@ -205,7 +211,7 @@ class Trainer(DefaultTrainer):
             return build_detection_train_loader(cfg, extract_features=extract_features)
         else:
             assert dataset is not None, "Extracted dataset must be specified!"
-            return build_detection_train_loader(cfg, dataset=dataset)
+            return build_detection_train_loader(cfg, dataset=dataset, mapped = True)
 
     @classmethod
     def build_evaluator(cls, cfg, dataset_name, output_folder=None):
@@ -246,11 +252,11 @@ class Trainer(DefaultTrainer):
         """
         If you want to do something with the data, you can wrap the dataloader.
         """
-        data = next(self._data_loader_after_iter)
-        proposals, box_features = self.unzip_data(data)
-        data_time = time.perf_counter() - start
-        # proposals, box_features = self.proposals, self.box_features
-        # data_time = 0
+        # data = next(self._data_loader_after_iter)
+        # proposals, box_features = self.unzip_data(data)
+        # data_time = time.perf_counter() - start
+        proposals, box_features = self.proposals, self.box_features
+        data_time = 0
 
         """
         If you want to do something with the losses, you can wrap the model.
@@ -259,7 +265,7 @@ class Trainer(DefaultTrainer):
         # loss_dict = self.model.losses_from_features(self.box_features, self.proposals)
         losses = sum(loss_dict.values())
         # print('loss update: {}'.format(loss_dict))
-
+        # embed()
         """
         If you need to accumulate gradients or do something similar, you can
         wrap the optimizer with your custom `zero_grad()` method.

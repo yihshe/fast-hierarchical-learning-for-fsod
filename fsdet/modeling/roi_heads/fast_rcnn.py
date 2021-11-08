@@ -46,10 +46,10 @@ Naming convention:
     gt_proposal_deltas: ground-truth box2box transform deltas
 """
 
-
+# TODO now, this function is to be modified
 def fast_rcnn_inference(
-    boxes, scores, image_shapes, score_thresh, nms_thresh, topk_per_image
-):
+    boxes, scores, image_shapes, score_thresh, nms_thresh, topk_per_image, super_base_class = False, gt_classes = None, alternative_score_thresh = None,
+    ):
     """
     Call `fast_rcnn_inference_single_image` for all images.
 
@@ -75,27 +75,89 @@ def fast_rcnn_inference(
         kept_indices: (list[Tensor]): A list of 1D tensor of length of N, each element indicates
             the corresponding boxes/scores index in [0, Ri) from the input, for image i.
     """
-    result_per_image = [
-        fast_rcnn_inference_single_image(
-            boxes_per_image,
-            scores_per_image,
-            image_shape,
-            score_thresh,
-            nms_thresh,
-            topk_per_image,
-        )
-        for scores_per_image, boxes_per_image, image_shape in zip(
-            scores, boxes, image_shapes
-        )
-    ]
-    # print('infer done')
-    # embed()
+    # if not super_base_class:
+    if gt_classes is None:
+        result_per_image = [
+            fast_rcnn_inference_single_image(
+                boxes_per_image,
+                scores_per_image,
+                image_shape,
+                score_thresh,
+                nms_thresh,
+                topk_per_image,
+                super_base_class = super_base_class,
+                alternative_score_thresh = alternative_score_thresh,
+            ) 
+            for scores_per_image, boxes_per_image, image_shape in zip(
+                scores, boxes, image_shapes,
+            )
+        ]
+    else:
+        result_per_image = [
+            fast_rcnn_inference_single_image(
+                boxes_per_image,
+                scores_per_image,
+                image_shape,
+                score_thresh,
+                nms_thresh,
+                topk_per_image,
+                gt_classes_per_image = gt_classes_per_image,
+                super_base_class = super_base_class,
+                alternative_score_thresh = alternative_score_thresh,
+            ) 
+            for scores_per_image, boxes_per_image, image_shape, gt_classes_per_image in zip(
+                scores, boxes, image_shapes, gt_classes,
+            )
+        ]
     return tuple(list(x) for x in zip(*result_per_image))
+    # else:
+    #     result_per_image = [
+    #         fast_rcnn_inference_single_image_super_base_class(
+    #             boxes_per_image,
+    #             scores_per_image,
+    #             image_shape,
+    #         ) 
+    #         for scores_per_image, boxes_per_image, image_shape in zip(
+    #             scores, boxes, image_shapes
+    #         )
+    #     ]
+    #     return result_per_image
 
+def fast_rcnn_inference_single_image_super_base_class(
+    boxes, scores, image_shape
+    ):
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+    if scores.shape[0] == 0:
+        # result = Instances(image_shape)
+        # result.pred_boxes = Boxes(torch.tensor([]).to(device))
+        # result.scores = torch.tensor([]).to(device)
+        # result.pred_classes = torch.tensor([]).to(device)
+        return torch.tensor([]).to(device)
+
+    pred_scores, pred_classes = scores.max(dim=1)
+
+    num_bbox_reg_classes = boxes.shape[1] // 4
+    boxes = Boxes(boxes.reshape(-1, 4))
+    boxes.clip(image_shape)
+    boxes = boxes.tensor.view(-1, num_bbox_reg_classes, 4)  # R x C x 4
+
+    pred_boxes = torch.tensor([]).to(device)
+    for i, pred_class in enumerate(pred_classes):
+        pred_boxes = torch.cat((pred_boxes, boxes[i, pred_class]))
+    pred_boxes = pred_boxes.view(-1,4) 
+
+    # result = Instances(image_shape)
+    # result.pred_boxes = Boxes(pred_boxes)
+    # result.scores = scores
+    # result.pred_classes = pred_classes
+
+    return pred_boxes
+    
 
 def fast_rcnn_inference_single_image(
-    boxes, scores, image_shape, score_thresh, nms_thresh, topk_per_image
-):
+    boxes, scores, image_shape, score_thresh, nms_thresh, topk_per_image, gt_classes_per_image = None, super_base_class = False, alternative_score_thresh = None,
+    ):
     """
     Single-image inference. Return bounding-box detection results by thresholding
     on scores and applying non-maximum suppression (NMS).
@@ -109,7 +171,7 @@ def fast_rcnn_inference_single_image(
     """
     # print('before single infer')
     # embed()
-    scores = scores[:, :-1]
+    scores = scores[:, :-1] if super_base_class is False else scores
     num_bbox_reg_classes = boxes.shape[1] // 4
     # Convert to Boxes to use the `clip` function ...
     boxes = Boxes(boxes.reshape(-1, 4))
@@ -117,30 +179,38 @@ def fast_rcnn_inference_single_image(
     boxes = boxes.tensor.view(-1, num_bbox_reg_classes, 4)  # R x C x 4
 
     # Filter results based on detection scores
-    filter_mask = scores > score_thresh  # R x K
+    # filter_mask = scores > score_thresh  # R x K
+    filter_mask = scores > score_thresh if alternative_score_thresh is None else scores > alternative_score_thresh
+
     # R' x 2. First column contains indices of the R predictions;
     # Second column contains indices of classes.
     filter_inds = filter_mask.nonzero()
+    # print('before keep')
+    # embed()
     if num_bbox_reg_classes == 1:
         boxes = boxes[filter_inds[:, 0], 0]
     else:
         boxes = boxes[filter_mask] 
     scores = scores[filter_mask]
-
     # Apply per-class NMS
     keep = batched_nms(boxes, scores, filter_inds[:, 1], nms_thresh)
     # print('keep')
     # embed()
     if topk_per_image >= 0:
         keep = keep[:topk_per_image]
+    # NOTE selected proposals, each proposal with a box of the predicted class and a score of the predicted class
     boxes, scores, filter_inds = boxes[keep], scores[keep], filter_inds[keep]
-
+    # print('after keep')
+    # embed()
     result = Instances(image_shape)
     result.pred_boxes = Boxes(boxes)
     result.scores = scores
+    # NOTE predicted classes with corresponding proposals, each with a pred_box (not deltas) and a score (softmaxed)
     result.pred_classes = filter_inds[:, 1]
     # print('single infer')
     # embed()
+    if gt_classes_per_image is not None:
+        result.gt_classes = gt_classes_per_image[filter_inds[:,0]]
     return result, filter_inds[:, 0]
 
 
@@ -156,6 +226,7 @@ class FastRCNNOutputs(object):
         pred_proposal_deltas,
         proposals,
         smooth_l1_beta,
+        super_base_class = False,
     ):
         """
         Args:
@@ -198,13 +269,15 @@ class FastRCNNOutputs(object):
             assert proposals[0].has("gt_classes")
             self.gt_classes = cat([p.gt_classes for p in proposals], dim=0)
 
+        self.super_base_class = super_base_class
+
     def _log_accuracy(self):
         """
         Log the accuracy metrics to EventStorage.
         """
         num_instances = self.gt_classes.numel()
         pred_classes = self.pred_class_logits.argmax(dim=1)
-        bg_class_ind = self.pred_class_logits.shape[1] - 1
+        bg_class_ind = self.pred_class_logits.shape[1] - 1 if not self.super_base_class else self.pred_class_logits.shape[1] 
 
         fg_inds = (self.gt_classes >= 0) & (self.gt_classes < bg_class_ind)
         num_fg = fg_inds.nonzero().numel()
@@ -225,11 +298,12 @@ class FastRCNNOutputs(object):
             storage.put_scalar(
                 "fast_rcnn/fg_cls_accuracy", fg_num_accurate / num_fg
             )
+            # This metric does not make sense when self.super_base_class == True, since no negative predctions (bg) will be made
             storage.put_scalar(
                 "fast_rcnn/false_negative", num_false_negative / num_fg
             )
 
-    def softmax_cross_entropy_loss(self, loss_weight = None):
+    def softmax_cross_entropy_loss(self):
         """
         Compute the softmax cross entropy loss for box classification.
 
@@ -239,7 +313,7 @@ class FastRCNNOutputs(object):
         self._log_accuracy()
         # embed()
         return F.cross_entropy(
-            self.pred_class_logits, self.gt_classes, reduction="mean", weight=loss_weight
+            self.pred_class_logits, self.gt_classes, reduction="mean"
         )
 
     def smooth_l1_loss(self):
@@ -256,7 +330,7 @@ class FastRCNNOutputs(object):
         cls_agnostic_bbox_reg = self.pred_proposal_deltas.size(1) == box_dim
         device = self.pred_proposal_deltas.device
 
-        bg_class_ind = self.pred_class_logits.shape[1] - 1
+        bg_class_ind = self.pred_class_logits.shape[1] - 1 if not self.super_base_class else self.pred_class_logits.shape[1]
 
         # Box delta loss is only computed between the prediction for the gt class k
         # (if 0 <= k < bg_class_ind) and the target; there is no loss defined on predictions
@@ -315,7 +389,7 @@ class FastRCNNOutputs(object):
         cls_agnostic_bbox_reg = self.pred_proposal_deltas.size(1) == box_dim
         device = self.pred_proposal_deltas.device
 
-        bg_class_ind = self.pred_class_logits.shape[1] - 1
+        bg_class_ind = self.pred_class_logits.shape[1] - 1 if not self.super_base_class else self.pred_class_logits.shape[1]
 
         # Box delta loss is only computed between the prediction for the gt class k
         # (if 0 <= k < bg_class_ind) and the target; there is no loss defined on predictions
@@ -358,7 +432,7 @@ class FastRCNNOutputs(object):
         loss_box_reg = loss_box_reg / self.gt_classes.numel()
         return loss_box_reg
 
-    def losses(self, loss_weight=None):
+    def losses(self):
         """
         Compute the default losses for box head in Fast(er) R-CNN,
         with softmax cross entropy loss and smooth L1 loss.
@@ -368,9 +442,9 @@ class FastRCNNOutputs(object):
         """
         # TODO provide two options later with either L1 or L2 returned
         return {
-            "loss_cls": self.softmax_cross_entropy_loss(loss_weight),
-            # "loss_box_reg": self.smooth_l1_loss(),
-            "loss_box_reg": self.squared_l2_loss(),
+            "loss_cls": self.softmax_cross_entropy_loss(),
+            "loss_box_reg": self.smooth_l1_loss(),
+            # "loss_box_reg": self.squared_l2_loss(),
         }
 
     def predict_boxes(self):
@@ -407,7 +481,7 @@ class FastRCNNOutputs(object):
         # embed()
         return probs.split(self.num_preds_per_image, dim=0)
 
-    def inference(self, score_thresh, nms_thresh, topk_per_image):
+    def inference(self, score_thresh, nms_thresh, topk_per_image, with_gt = False, alternative_score_thresh = None):
         """
         Args:
             score_thresh (float): same as fast_rcnn_inference.
@@ -421,6 +495,10 @@ class FastRCNNOutputs(object):
         scores = self.predict_probs()
         image_shapes = self.image_shapes
 
+        gt_classes = None
+        if with_gt == True:
+            gt_classes = self.gt_classes.split(self.num_preds_per_image, dim=0)
+
         return fast_rcnn_inference(
             boxes,
             scores,
@@ -428,6 +506,9 @@ class FastRCNNOutputs(object):
             score_thresh,
             nms_thresh,
             topk_per_image,
+            super_base_class=self.super_base_class,
+            gt_classes = gt_classes,
+            alternative_score_thresh = alternative_score_thresh,
         )
 
 
@@ -440,7 +521,7 @@ class FastRCNNOutputLayers(nn.Module):
     """
 
     def __init__(
-        self, cfg, input_size, num_classes, cls_agnostic_bbox_reg, box_dim=4
+        self, cfg, input_size, num_classes, cls_agnostic_bbox_reg, box_dim=4, super_base_class = False
     ):
         """
         Args:
@@ -459,7 +540,7 @@ class FastRCNNOutputLayers(nn.Module):
         # The prediction layer for num_classes foreground classes and one
         # background class
         # (hence + 1)
-        self.cls_score = nn.Linear(input_size, num_classes + 1)
+        self.cls_score = nn.Linear(input_size, num_classes + 1) if not super_base_class else nn.Linear(input_size, num_classes)
         num_bbox_reg_classes = 1 if cls_agnostic_bbox_reg else num_classes
         self.bbox_pred = nn.Linear(input_size, num_bbox_reg_classes * box_dim)
 
@@ -468,14 +549,6 @@ class FastRCNNOutputLayers(nn.Module):
         for l in [self.cls_score, self.bbox_pred]:
             nn.init.constant_(l.bias, 0)
 
-        self.cls_score_bias = None
-        if cfg.MODEL.ROI_HEADS.CLS_SCORE_LARGE_BIAS is True:
-            cls_score_bias = torch.zeros(num_classes + 1)
-            metadata = _get_builtin_metadata("coco_fewshot")
-            for k in metadata['novel_dataset_id_to_contiguous_id'].keys():
-                cls_score_bias[metadata['thing_dataset_id_to_contiguous_id'][k]] = -10000
-            self.cls_score_bias = nn.Parameter(cls_score_bias)
-
     def forward(self, x, weights=None):
         if x.dim() > 2:
             x = torch.flatten(x, start_dim=1)
@@ -483,15 +556,11 @@ class FastRCNNOutputLayers(nn.Module):
         if weights is None:
             scores = self.cls_score(x)
             proposal_deltas = self.bbox_pred(x)
-
-            if self.cls_score_bias is not None:
-                    scores = scores + self.cls_score_bias
         else:
             scores = torch.nn.functional.linear(x, weights[0], bias=weights[1]) 
             proposal_deltas = torch.nn.functional.linear(x, weights[2], bias=weights[3]) 
 
         return scores, proposal_deltas
-
 
 @ROI_HEADS_OUTPUT_REGISTRY.register()
 class CosineSimOutputLayers(nn.Module):
@@ -589,3 +658,56 @@ class CosineSimOutputLayers(nn.Module):
             proposal_deltas = torch.nn.functional.linear(x, weights[1], bias=weights[2]) 
             
         return scores, proposal_deltas
+
+@ROI_HEADS_OUTPUT_REGISTRY.register()
+class HDABaseCatFastRCNNOutputLayers(nn.Module):
+    """
+    Two linear layers for predicting Fast R-CNN outputs:
+      (1) proposal-to-detection box regression deltas
+      (2) classification scores
+    """
+
+    def __init__(
+        self, cfg, input_size, num_classes
+    ):
+        """
+        Args:
+            cfg: config
+            input_size (int): channels, or (channels, height, width)
+            num_classes (int): number of foreground classes
+            cls_agnostic_bbox_reg (bool): whether to use class agnostic for bbox regression
+            box_dim (int): the dimension of bounding boxes.
+                Example box dimensions: 4 for regular XYXY boxes and 5 for rotated XYWHA boxes
+        """
+        super(HDABaseCatFastRCNNOutputLayers, self).__init__()
+
+        if not isinstance(input_size, int):
+            input_size = np.prod(input_size)
+
+        # The prediction layer for num_classes foreground classes and one
+        # background class
+        # (hence + 1)
+        self.cls_score = nn.Linear(input_size, num_classes)
+        # num_bbox_reg_classes = 1 if cls_agnostic_bbox_reg else num_classes
+        # self.bbox_pred = nn.Linear(input_size, num_bbox_reg_classes * box_dim)
+
+        nn.init.normal_(self.cls_score.weight, std=0.01)
+        nn.init.constant_(self.cls_score.bias, 0)
+        # nn.init.normal_(self.bbox_pred.weight, std=0.001)
+        # for l in [self.cls_score, self.bbox_pred]:
+        #     nn.init.constant_(l.bias, 0)
+
+    def forward(self, x, weights=None):
+        if x.dim() > 2:
+            x = torch.flatten(x, start_dim=1)
+
+        if weights is None:
+            scores = self.cls_score(x)
+            # proposal_deltas = self.bbox_pred(x)
+
+        else:
+            scores = torch.nn.functional.linear(x, weights[0], bias=weights[1]) 
+            # proposal_deltas = torch.nn.functional.linear(x, weights[2], bias=weights[3]) 
+
+        # return scores, proposal_deltas
+        return scores

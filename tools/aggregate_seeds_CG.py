@@ -32,6 +32,8 @@ def parse_args():
 
     # ckpt path
     parser.add_argument('--ckpt-path-prefix', type = str, default='checkpoints')
+    # new setting or not
+    parser.add_argument('--new-setting', action='store_true', help='Aggregate seeds for the results of new setting')
 
     args = parser.parse_args()
     return args
@@ -50,6 +52,7 @@ def main(args):
     else:
         unfreeze = '_randnovel' if not args.coco else ''
     # TODO aggregate seeds for a specific shot
+    new_setting = '_new_setting' if args.new_setting else ''
     for i in range(args.seeds):
         seed = 'seed{}/'.format(i) if i != 0 else ''
         # TODO change the prefix of the path here to the specific TFA and HDA
@@ -61,13 +64,14 @@ def main(args):
         else:
             ckpt = prefix + '{}_{}shot{}{}'.format(
                 args.split, args.shots, unfreeze, args.suffix)
+        # TODO add new setting here
         if os.path.exists(ckpt):
-            if os.path.exists(os.path.join(ckpt, 'inference/all_res.json')):
-                ckpt_ = os.path.join(ckpt, 'inference/all_res.json')
+            if os.path.exists(os.path.join(ckpt, 'inference/all_res{}.json'.format(new_setting))):
+                ckpt_ = os.path.join(ckpt, 'inference/all_res{}.json'.format(new_setting))
                 res = json.load(open(ckpt_, 'r'))
                 res = res[os.path.join(ckpt, 'model_final.pth')]['bbox']
-            elif os.path.exists(os.path.join(ckpt, 'inference/res_final.json')):
-                ckpt = os.path.join(ckpt, 'inference/res_final.json')
+            elif os.path.exists(os.path.join(ckpt, 'inference/res_final{}.json'.format(new_setting))):
+                ckpt = os.path.join(ckpt, 'inference/res_final{}.json'.format(new_setting))
                 res = json.load(open(ckpt, 'r'))['bbox']
             else:
                 print('Missing: {}'.format(ckpt))
@@ -84,35 +88,48 @@ def main(args):
     print('Num ckpts: {}'.format(num_ckpts))
     print('')
 
-    save_dir = '{}/{}/faster_rcnn/aggregated_results'.format(args.ckpt_path_prefix, dataset)
+    # TODO new setting or not
+    save_dir = '{}/{}/faster_rcnn/aggregated_results{}'.format(args.ckpt_path_prefix, dataset, new_setting)
     # Output results
     if args.print:
         # Clean output for copy and pasting
         out_str = ''
         for metric in metrics:
-            out_str += '{0:.1f} '.format(np.mean(metrics[metric]))
+            if metric in ['AP', 'bAP', 'aAP', 'fAP', 'nAP']:
+                out_str += '{} '.format(metric)
+        print(out_str)
+
+        out_str = ''
+        for metric in metrics:
+            if metric in ['AP', 'bAP', 'aAP', 'fAP', 'nAP']:
+                out_str += '{0:.1f} '.format(np.mean(metrics[metric]))
         print(out_str)
         out_str = ''
         for metric in metrics:
-            out_str += '{0:.1f} '.format(
-                1.96*np.std(metrics[metric]) / math.sqrt(len(metrics[metric]))
-            )
+            if metric in ['AP', 'bAP', 'aAP', 'fAP', 'nAP']:
+                out_str += '{0:.1f} '.format(
+                    1.96*np.std(metrics[metric]) / math.sqrt(len(metrics[metric]))
+                )
         print(out_str)
         out_str = ''
         for metric in metrics:
-            out_str += '{0:.1f} '.format(np.std(metrics[metric]))
+            if metric in ['AP', 'bAP', 'aAP', 'fAP', 'nAP']:
+                out_str += '{0:.1f} '.format(np.std(metrics[metric]))
         print(out_str)
         out_str = ''
         for metric in metrics:
-            out_str += '{0:.1f} '.format(np.percentile(metrics[metric], 25))
+            if metric in ['AP', 'bAP', 'aAP', 'fAP', 'nAP']:
+                out_str += '{0:.1f} '.format(np.percentile(metrics[metric], 25))
         print(out_str)
         out_str = ''
         for metric in metrics:
-            out_str += '{0:.1f} '.format(np.percentile(metrics[metric], 50))
+            if metric in ['AP', 'bAP', 'aAP', 'fAP', 'nAP']:
+                out_str += '{0:.1f} '.format(np.percentile(metrics[metric], 50))
         print(out_str)
         out_str = ''
         for metric in metrics:
-            out_str += '{0:.1f} '.format(np.percentile(metrics[metric], 75))
+            if metric in ['AP', 'bAP', 'aAP', 'fAP', 'nAP']:
+                out_str += '{0:.1f} '.format(np.percentile(metrics[metric], 75))
         print(out_str)
     else:
         # Verbose output
@@ -120,6 +137,9 @@ def main(args):
         for metric in metrics:
             print(metric)
             print('Mean \t {0:.4f}'.format(np.mean(metrics[metric])))
+            print('CI \t {0:.4f}'.format(
+                1.96*np.std(metrics[metric]) / math.sqrt(len(metrics[metric]))
+                ))
             print('Std \t {0:.4f}'.format(np.std(metrics[metric])))
             print('Q1 \t {0:.4f}'.format(np.percentile(metrics[metric], 25)))
             print('Median \t {0:.4f}'.format(np.percentile(metrics[metric], 50)))
@@ -128,6 +148,9 @@ def main(args):
 
             res[metric] = {}
             res[metric]['Mean'] = '{0:.2f}'.format(np.mean(metrics[metric]))
+            res[metric]['CI'] = '{0:.2f}'.format(
+                1.96*np.std(metrics[metric]) / math.sqrt(len(metrics[metric]))
+            )
             res[metric]['Std'] = '{0:.2f}'.format(np.std(metrics[metric]))
             res[metric]['Q1'] = '{0:.2f}'.format(np.percentile(metrics[metric], 25))
             res[metric]['Median'] = '{0:.2f}'.format(np.percentile(metrics[metric], 50))
@@ -148,6 +171,8 @@ def main(args):
         # os.makedirs(args.save_dir, exist_ok=True)
         os.makedirs(save_dir, exist_ok=True)
 
+        # TODO also plot the AP for animal and food (aAP and fAP) in the new split
+        # we can also save the results and plot the mean with confidence interval range later on
         for met in ['avg', 'stdev', 'ci']:
             for metric, c in zip(['nAP', 'nAP50', 'nAP75'],
                                  ['bo-', 'ro-', 'go-']):

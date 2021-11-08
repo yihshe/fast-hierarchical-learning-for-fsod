@@ -21,7 +21,11 @@ from torch.nn import functional as F
 from .box_head import build_box_head
 from .fast_rcnn import ROI_HEADS_OUTPUT_REGISTRY, FastRCNNOutputLayers, FastRCNNOutputs
 from fsdet.data.builtin_meta import _get_builtin_metadata
+from fsdet.data import HDAMetaInfo
+from fsdet.data.lvis_v0_5_categories import LVIS_CATEGORIES, LVIS_CATEGORIES_NOVEL
+
 from IPython import embed
+
 
 ROI_HEADS_REGISTRY = Registry("ROI_HEADS")
 ROI_HEADS_REGISTRY.__doc__ = """
@@ -242,9 +246,10 @@ class ROIHeads(torch.nn.Module):
             proposals_with_gt.append(proposals_per_image)
 
         # Log the number of fg/bg samples that are selected for training ROI heads
-        storage = get_event_storage()
-        storage.put_scalar("roi_head/num_fg_samples", np.mean(num_fg_samples))
-        storage.put_scalar("roi_head/num_bg_samples", np.mean(num_bg_samples))
+        # NOTE annotated for the test with gt
+        # storage = get_event_storage()
+        # storage.put_scalar("roi_head/num_fg_samples", np.mean(num_fg_samples))
+        # storage.put_scalar("roi_head/num_bg_samples", np.mean(num_bg_samples))
 
         return proposals_with_gt
 
@@ -437,13 +442,23 @@ class StandardROIHeads(ROIHeads):
             self.cls_agnostic_bbox_reg,
         )
 
+        self.with_gt  = False
+
     def forward(self, images, features, proposals, targets=None):
         """
         See :class:`ROIHeads.forward`.
         """
+        # print('forward')
+        # embed()
         del images
         if self.training:
             proposals = self.label_and_sample_proposals(proposals, targets)
+
+        elif targets is not None:
+            # NOTE maybe the step of sampling is not necessary for inference
+            proposals = self.label_and_sample_proposals(proposals, targets)
+            self.with_gt = True
+
         del targets
 
         features_list = [features[f] for f in self.in_features]
@@ -493,6 +508,7 @@ class StandardROIHeads(ROIHeads):
                 self.test_score_thresh,
                 self.test_nms_thresh,
                 self.test_detections_per_img,
+                with_gt = self.with_gt,
             )
             return pred_instances
     
@@ -565,7 +581,7 @@ class StandardROIHeads(ROIHeads):
         
         return gt_box_features, gt_classes
 
-    def losses_from_features(self, box_features, proposals, weights = None):
+    def losses_from_features(self, box_features, proposals, weights = None, super_cat: str = None):
         """
         Forward logic of the box prediction branch for computing losses.
 
@@ -594,6 +610,7 @@ class StandardROIHeads(ROIHeads):
         )
         return outputs.losses()
 
+# NOTE HDAROIHeads for standard setting. this ROI head applies hierarchical approach to detect classes in TFA setting (only super class of background)
 @ROI_HEADS_REGISTRY.register()
 class TwoStageROIHeads(ROIHeads):
     """
@@ -645,22 +662,27 @@ class TwoStageROIHeads(ROIHeads):
         )
         output_layer = cfg.MODEL.ROI_HEADS.OUTPUT_LAYER
 
-        # TODO change the number of classes to cfg params
-        # TODO add pascal voc 15, 5
+        # TODO LVIS modify the following params in the config accordingly
+        # NOTE in LVIS training, we trainn it directly on the Rare dataset, so num_classes is 454 when label the bg id
+        self.lvis = True if 'lvis' in cfg.DATASETS.TRAIN[0] else False
+
+        # TODO TODO fix the bug and test the code
+        # if self.training and self.lvis:
+        #     self.num_classes  = cfg.MODEL.ROI_HEADS.NUM_CLASSES_NOVEL
+        
         self.num_classes_base = cfg.MODEL.ROI_HEADS.NUM_CLASSES_BASE
         self.num_classes_novel = cfg.MODEL.ROI_HEADS.NUM_CLASSES_NOVEL
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        # TODO currently, the metadata has not been adapted for meta learning
-        # for voc, the idmap of metadata needs to be set up here, novel is the last five
         metadata = self.get_metadata(cfg.DATASETS.TRAIN[0])
         # metadata = _get_builtin_metadata('coco_fewshot')
+        # TODO lvis c, adjust the idmap here
         self.idmaps = self.init_idmaps(metadata)
         self.metadata = metadata
 
-        # TODO load the pretrained weights and freeze it 
         self.box_predictor_base = ROI_HEADS_OUTPUT_REGISTRY.get(output_layer)(
             cfg,
             self.box_head.output_size,
+            # NOTE HDA num of base classes should be 42 for the first hier level (also related to the weight initialization)
             self.num_classes_base,
             self.cls_agnostic_bbox_reg,
         )
@@ -671,9 +693,14 @@ class TwoStageROIHeads(ROIHeads):
             self.num_classes_novel,
             self.cls_agnostic_bbox_reg,
         )
+        # NOTE HDA add two more roi heads for the child classes of animal and food
+        self.with_gt = False
+        self.alternative_test_score_thresh = cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST_SECOND
 
     def get_metadata(self, dataset_name):
         metadata = dict({})
+        # NOTE HDA the metadata for coco to get is coco_fewshot_base_all
+        # NOTE LVIS add the meta data of lvis needed for proposal filtering
         if 'coco' in dataset_name:
             metadata = _get_builtin_metadata('coco_fewshot')
         elif 'voc' in dataset_name:
@@ -685,8 +712,34 @@ class TwoStageROIHeads(ROIHeads):
             metadata['thing_dataset_id_to_contiguous_id'] = {i:i for i,v in enumerate(metadata['thing_classes'])}
             metadata['base_dataset_id_to_contiguous_id'] = {i:i for i,v in enumerate(metadata['base_classes'])}
             metadata['novel_dataset_id_to_contiguous_id'] = {len(metadata['base_classes'])+i:i for i,v in enumerate(metadata['novel_classes'])}
+        elif 'lvis' in dataset_name:
+            # NOTE the metadata used here should contain thing, base, novel, which coulld be different to the metadata of the dataset
+            # if the novel detector is trained directly on the Rare dataset, then the metadata here will only be used in inference.
+            assert len(LVIS_CATEGORIES) == 1230
+            cat_ids = [k["id"] for k in LVIS_CATEGORIES]
+            assert min(cat_ids) == 1 and max(cat_ids) == len(cat_ids), "Category ids are not in [1, #categories], as expected"
+            
+            # Ensure that the category list is sorted by id
+            lvis_categories = [k for k in sorted(LVIS_CATEGORIES, key=lambda x: x["id"])]
+            thing_classes = [k["synonyms"][0] for k in lvis_categories]
+            
+            lvis_categories_novel = [k for k in sorted(LVIS_CATEGORIES_NOVEL, key=lambda x: x["id"])] 
+            novel_classes = [k["synonyms"][0] for k in lvis_categories_novel]
+            
+            lvis_categories_base = [k for k in sorted(LVIS_CATEGORIES, key=lambda x: x["id"]) if k["synonyms"][0] not in novel_classes]
+            base_classes = [k["synonyms"][0] for k in lvis_categories_base]
+
+
+            metadata["thing_classes"]= thing_classes
+            metadata["thing_dataset_id_to_contiguous_id"] = {x["id"]:i for i,x in enumerate(lvis_categories)}
+            metadata["novel_classes"] = novel_classes
+            metadata["novel_dataset_id_to_contiguous_id"] = {x["id"]:i for i,x in enumerate(lvis_categories_novel)}
+            metadata["base_classes"] = base_classes
+            metadata["base_dataset_id_to_contiguous_id"] = {x["id"]:i for i,x in enumerate(lvis_categories_base)}
+            
         return metadata
 
+    # TODO LVIS new init_idmaps for LVIS or put it in a separate class
     def init_idmaps(self, metadata):
         idmap_global = metadata['thing_dataset_id_to_contiguous_id']
         idmap_global_reversed = {v: k for k, v in idmap_global.items()}
@@ -717,17 +770,22 @@ class TwoStageROIHeads(ROIHeads):
         del images
         if self.training:
             proposals = self.label_and_sample_proposals(proposals, targets)
+        # NOTE gt
+        elif targets is not None:
+            proposals = self.label_and_sample_proposals(proposals, targets)
+            self.with_gt = True
+        
         del targets
 
         features_list = [features[f] for f in self.in_features]
-
+        
         if self.training:
             losses = self._forward_box(features_list, proposals)
             return proposals, losses
         else:
             pred_instances = self._forward_box(features_list, proposals)
             return pred_instances, {}
-
+    
     def _forward_box(self, features, proposals):
         """
         Forward logic of the box prediction branch.
@@ -748,14 +806,24 @@ class TwoStageROIHeads(ROIHeads):
         )
         box_features = self.box_head(box_features)
 
-        # NOTE box predictor should be frozen
-        pred_class_logits_base, pred_proposal_deltas_base = self.box_predictor_base(box_features)
-        fg_inds, bg_inds, proposals_base, proposals_novel = self.detection_filter(proposals, pred_class_logits_base, pred_proposal_deltas_base)
+        # NOTE If the dataset is LVIS and it is in training mode, then filtering is not needed as train the model directly on Rare dataset
+        # Overall the forward_box function is only used for batch case, for both training and inference
+        # actually currently this function only support the training for LVIS dataset, in SCG case (also SGD in the future)
         
-        pred_class_logits_base, pred_proposal_deltas_base = pred_class_logits_base[fg_inds], pred_proposal_deltas_base[fg_inds]
+        # if self.training and self.lvis:
+        #     pred_class_logits_novel, pred_proposal_deltas_novel = self.box_predictor(box_features)
+        #     proposals_novel = proposals
+        # else:
+        pred_class_logits_base, pred_proposal_deltas_base = self.box_predictor_base(box_features)
+        pred_instances_base, bg_inds, proposals_novel = self.detection_filter(proposals, pred_class_logits_base, pred_proposal_deltas_base)
+        
+        # selected base proposals, and corresponding logits and deltas 
+        # pred_class_logits_base, pred_proposal_deltas_base = pred_class_logits_base[fg_inds], pred_proposal_deltas_base[fg_inds]
         pred_class_logits_novel, pred_proposal_deltas_novel = self.box_predictor(box_features[bg_inds])
+        
         del box_features
 
+        # NOTE gt
         outputs_novel = FastRCNNOutputs(
             self.box2box_transform,
             pred_class_logits_novel,
@@ -767,80 +835,45 @@ class TwoStageROIHeads(ROIHeads):
         if self.training:
             return outputs_novel.losses()
         else:
-            outputs_base = FastRCNNOutputs(
-                self.box2box_transform,
-                pred_class_logits_base,
-                pred_proposal_deltas_base,
-                proposals_base,
-                self.smooth_l1_beta,
-            )
-            pred_instances_base, _ = outputs_base.inference(
-                self.test_score_thresh,
-                self.test_nms_thresh,
-                self.test_detections_per_img,
-            )
             pred_instances_novel, _ = outputs_novel.inference(
                 self.test_score_thresh,
                 self.test_nms_thresh,
                 self.test_detections_per_img,
+                with_gt = self.with_gt,
             )
-            # print('infer done')
-            # embed()
-
-            # idmap_global = self.metadata['thing_dataset_id_to_contiguous_id']
-            # idmap_base_reversed = {v: k for k, v in self.metadata['base_dataset_id_to_contiguous_id'].items()}
-            # idmap_novel_reversed = {v: k for k, v in self.metadata['novel_dataset_id_to_contiguous_id'].items()}
-
-            idmap_global = self.idmaps['idmap_global']
-            idmap_base_reversed = self.idmaps['idmap_base_reversed']
-            idmap_novel_reversed = self.idmaps['idmap_novel_reversed']
-
-            pred_instances = list([])
-            for instance_base, instance_novel in zip(pred_instances_base, pred_instances_novel):
-                assert instance_base.image_size == instance_novel.image_size
-                instance = Instances(instance_base.image_size)
-                instance.pred_boxes = Boxes(torch.cat((instance_base.pred_boxes.tensor, instance_novel.pred_boxes.tensor)))
-                instance.scores = torch.cat((instance_base.scores, instance_novel.scores))
-
-                pred_classes_mapped_base = torch.zeros(instance_base.pred_classes.shape).to(self.device)
-                for i, pred_class in enumerate(instance_base.pred_classes.cpu().numpy()):
-                    pred_classes_mapped_base[i] = idmap_global[idmap_base_reversed[pred_class]]
-
-                pred_classes_mapped_novel = torch.zeros(instance_novel.pred_classes.shape).to(self.device)
-                for i, pred_class in enumerate(instance_novel.pred_classes.cpu().numpy()):
-                    pred_classes_mapped_novel[i] = idmap_global[idmap_novel_reversed[pred_class]]
-                
-                instance.pred_classes = torch.cat((pred_classes_mapped_base, pred_classes_mapped_novel))
-
-                pred_instances.append(instance)
-            # print('result cat done')
-            # embed()
+            pred_instances = self.merge_instances(pred_instances_base, pred_instances_novel)
+        
             return pred_instances
+  
+    def merge_instances(self, pred_instances_base, pred_instances_novel):
+        idmap_global = self.idmaps['idmap_global']
+        idmap_base_reversed = self.idmaps['idmap_base_reversed']
+        idmap_novel_reversed = self.idmaps['idmap_novel_reversed']
+
+        pred_instances = list([])
+        for instance_base, instance_novel in zip(pred_instances_base, pred_instances_novel):
+            assert instance_base.image_size == instance_novel.image_size
+            instance = Instances(instance_base.image_size)
+            instance.pred_boxes = Boxes(torch.cat((instance_base.pred_boxes.tensor, instance_novel.pred_boxes.tensor)))
+            instance.scores = torch.cat((instance_base.scores, instance_novel.scores))
+
+            pred_classes_mapped_base = torch.zeros(instance_base.pred_classes.shape).to(self.device)
+            for i, pred_class in enumerate(instance_base.pred_classes.cpu().numpy()):
+                pred_classes_mapped_base[i] = idmap_global[idmap_base_reversed[pred_class]]
+
+            pred_classes_mapped_novel = torch.zeros(instance_novel.pred_classes.shape).to(self.device)
+            for i, pred_class in enumerate(instance_novel.pred_classes.cpu().numpy()):
+                pred_classes_mapped_novel[i] = idmap_global[idmap_novel_reversed[pred_class]]
+            
+            instance.pred_classes = torch.cat((pred_classes_mapped_base, pred_classes_mapped_novel))
+            # NOTE gt
+            if instance_base.has("gt_classes"):
+                instance.gt_classes = torch.cat((instance_base.gt_classes, instance_novel.gt_classes))
+            pred_instances.append(instance)
     
+        return pred_instances
 
     def detection_filter(self, proposals, pred_class_logits_base, pred_proposal_deltas_base):
-        # num_preds_per_image = [len(p) for p in proposals]
-        # score_thresh = 0.05 # change it to cfg later
-        # scores = F.softmax(pred_class_logits_base, dim=-1)
-        # filter_mask = scores[:,:-1]>score_thresh
-        # filter_inds = filter_mask.nonzero()
-        # fg_inds = filter_inds[:,0].unique()
-        # bg_inds = torch.tensor([i for i in torch.arange(scores.shape[0]).to(self.device) if i not in fg_inds])
-
-        # scores_local_list = scores.split(num_preds_per_image, dim=0)
-        # proposals_base = None if self.training else list([]) 
-        # proposals_novel = list([])
-        # for scores_local, proposal in zip(scores_local_list, proposals):
-        #     filter_mask_local = scores_local[:,:-1]>score_thresh
-        #     filter_inds_local = filter_mask_local.nonzero()
-        #     fg_inds_local = filter_inds_local[:,0].unique()
-        #     bg_inds_local = torch.tensor([i for i in torch.arange(scores_local.shape[0]).to(self.device) if i not in fg_inds_local])
-            
-
-        #     if proposals_base is not None:
-        #         proposals_base.append(self.proposal_filter(proposal, fg_inds_local, novel = False))
-        #     proposals_novel.append(self.proposal_filter(proposal, bg_inds_local, novel = True))
-        
         # NOTE for test
         outputs_base_simulator = FastRCNNOutputs(
             self.box2box_transform,
@@ -850,143 +883,91 @@ class TwoStageROIHeads(ROIHeads):
             self.smooth_l1_beta,
         )
 
-        _, fg_inds_local_list = outputs_base_simulator.inference(
+        # NOTE gt
+        pred_instances_fg, fg_inds_local_list = outputs_base_simulator.inference(
             self.test_score_thresh,
             self.test_nms_thresh,
             self.test_detections_per_img,
+            with_gt = self.with_gt,
+            alternative_score_thresh = self.alternative_test_score_thresh,
         )
         # embed()
-
+        
         num_preds_per_image = [len(p) for p in proposals]
-        fg_inds = torch.tensor([]).to(self.device)
+        # fg_inds = torch.tensor([]).to(self.device)
         bg_inds = torch.tensor([]).to(self.device)
-        proposals_base = None if self.training else list([]) 
+        # NOTE HDA proposals_base will also be needed in training
+        # proposals_base = None if self.training else list([]) 
         proposals_novel = list([])
         
         pred_classes = pred_class_logits_base.argmax(dim=1)
         bg_class_id = pred_class_logits_base.shape[1]-1
         bg_score_max_bool_list = (pred_classes == bg_class_id).split(num_preds_per_image, dim=0)
         
+        # NOTE VOC filtering test
+        # scores = F.softmax(pred_class_logits_base,dim=-1)
+        # filter_mask = scores > 0.5
+        # filter_inds = filter_mask.nonzero()
+        
+        # obj_inds = set(filter_inds[:,0].unique().cpu().tolist())
+        # bg_score_max_bool_list = torch.tensor([i in obj_inds for i in range(pred_class_logits_base.shape[0])]).split(num_preds_per_image, dim=0)
+
         num_preds_per_image = torch.tensor(num_preds_per_image).long()
-        # TODO modify the filtering procedure here for meta learning of novel predictor, to train and test it on novel dataset only
-        # if self.training:
-        #     for i, (proposal, num_preds) in enumerate(zip(proposals, num_preds_per_image)):
-        #         if proposal.gt_classes[0] in self.idmaps['base_class_ids_global']:
-        #             continue
-        #         else:
-        #             bg_inds_local = torch.tensor([i for i in torch.arange(num_preds)]).long().to(self.device)
-        #             bg_inds = torch.cat((bg_inds, torch.sum(num_preds_per_image[:i])+bg_inds_local)).long()
-        #             proposals_novel.append(self.proposal_filter(proposal, bg_inds_local, novel = True))
-                
-        #         # print('iter')
-        #         # embed()
-    
-        # else:
+        
+        # NOTE HDA here we filter the proposals for animal, food, and background
         for i, (fg_inds_local, proposal, num_preds, bg_score_max_bool) in enumerate(zip(fg_inds_local_list, proposals, num_preds_per_image, bg_score_max_bool_list)):
 
             fg_inds_local, _ = fg_inds_local.long().unique().sort()
             bg_inds_local = torch.tensor([i for i in torch.arange(num_preds).to(self.device)[bg_score_max_bool] if i not in fg_inds_local]).long().to(self.device)
             
-            fg_inds = torch.cat((fg_inds, torch.sum(num_preds_per_image[:i])+fg_inds_local)).long()
+            # given the pred_classes, select the fg_inds and then filter the fg_inds_local, and concatenate to filter the features for prediction
+            # fg_inds = torch.cat((fg_inds, torch.sum(num_preds_per_image[:i])+fg_inds_local)).long()
             bg_inds = torch.cat((bg_inds, torch.sum(num_preds_per_image[:i])+bg_inds_local)).long()
-
-            if proposals_base is not None:
-                proposals_base.append(self.proposal_filter(proposal, fg_inds_local, novel = False))
+            
+            # NOTE HDA for training, we also need to keep the proposals_base to filter the proposals given the pred_classes
+            # if proposals_base is not None:
+            #     proposals_base.append(self.proposal_filter(proposal, fg_inds_local, novel = False))
 
             proposals_novel.append(self.proposal_filter(proposal, bg_inds_local, novel = True))
-            
-            # print('iter')
-            # embed()
 
-        # pred_classes = pred_class_logits_base.argmax(dim=1)
-        # bg_class_id = pred_class_logits_base.shape[1]-1
-        # fg_inds = torch.arange(len(pred_classes))[pred_classes!=bg_class_id].long().to(self.device)
-        # bg_inds = torch.arange(len(pred_classes))[pred_classes==bg_class_id].long().to(self.device)
-        # pred_class_logits_base_list = pred_class_logits_base.split(num_preds_per_image, dim=0)
-        # for i, (proposal, num_preds, pred_class_logits_base_local) in enumerate(zip(proposals, num_preds_per_image, pred_class_logits_base_list)):
-        #     pred_classes_local = pred_class_logits_base_local.argmax(dim=1)
-        #     fg_inds_local = torch.arange(len(pred_classes_local))[pred_classes_local!=bg_class_id].long().to(self.device)
-        #     bg_inds_local = torch.arange(len(pred_classes_local))[pred_classes_local==bg_class_id].long().to(self.device)
-
-        #     if proposals_base is not None:
-        #         proposals_base.append(self.proposal_filter(proposal, fg_inds_local, novel = False))
-        #     proposals_novel.append(self.proposal_filter(proposal, bg_inds_local, novel = True))
-        
-        # print('filter done')
-        # embed()
-        
-        return fg_inds, bg_inds, proposals_base, proposals_novel
+        # return pred_instances_fg, fg_inds, bg_inds, proposals_base, proposals_novel
+        return pred_instances_fg, bg_inds, proposals_novel
 
     def proposal_filter(self, proposal, inds, novel = False):
         proposal_filtered = Instances(proposal.image_size)
         proposal_filtered.proposal_boxes = Boxes(proposal.proposal_boxes.tensor[inds])
         proposal_filtered.objectness_logits = proposal.objectness_logits[inds]
-
+        
+        # only for training we have the gt_classes
         if proposal.has('gt_boxes'):
             proposal_filtered.gt_boxes = Boxes(proposal.gt_boxes.tensor[inds])
 
             assert proposal.has('gt_classes')
             
-            idmap_global = self.idmaps['idmap_global']
-            idmap_global_reversed = self.idmaps['idmap_global_reversed']
-            idmap_local = self.idmaps['idmap_novel'] if novel is True else self.idmaps['idmap_base']
-            bg_class_id_global = self.num_classes_base+self.num_classes_novel
-            bg_class_id_local = self.num_classes_novel if novel is True else self.num_classes_base
-            other_class_ids_global = self.idmaps['base_class_ids_global'] if novel is True else self.idmaps['novel_class_ids_global']
-            other_class_ids_global = list(other_class_ids_global) + [bg_class_id_global]
+            if self.with_gt == True:
+                # If with_gt is True, it means that it is in test phase, rather than training phase
+                proposal_filtered.gt_classes = proposal.gt_classes[inds]
+            else:
+                # NOTE add part for gt in test
+                idmap_global = self.idmaps['idmap_global']
+                idmap_global_reversed = self.idmaps['idmap_global_reversed']
+                idmap_local = self.idmaps['idmap_novel'] if novel is True else self.idmaps['idmap_base']
+                # NOTE HDA the num_classes_base here should be 60 child classes rather than 42
+                bg_class_id_global = self.num_classes_base+self.num_classes_novel
+                bg_class_id_local = self.num_classes_novel if novel is True else self.num_classes_base
+                other_class_ids_global = self.idmaps['base_class_ids_global'] if novel is True else self.idmaps['novel_class_ids_global']
+                other_class_ids_global = list(other_class_ids_global) + [bg_class_id_global]
 
-            gt_classes_filtered = proposal.gt_classes[inds]
-            gt_classes_mapped = torch.zeros(gt_classes_filtered.shape).to(self.device)
-            for i, gt_class in enumerate(gt_classes_filtered.cpu().numpy()):
-                gt_classes_mapped[i] = bg_class_id_local if gt_class in other_class_ids_global else idmap_local[idmap_global_reversed[gt_class]]
-           
-            proposal_filtered.gt_classes = gt_classes_mapped.long()
+                gt_classes_filtered = proposal.gt_classes[inds]
+                gt_classes_mapped = torch.zeros(gt_classes_filtered.shape).to(self.device)
+                for i, gt_class in enumerate(gt_classes_filtered.cpu().numpy()):
+                    gt_classes_mapped[i] = bg_class_id_local if gt_class in other_class_ids_global else idmap_local[idmap_global_reversed[gt_class]]
+            
+                proposal_filtered.gt_classes = gt_classes_mapped.long()
 
         return proposal_filtered
 
-
-    def merge_predictions(self, fg_inds, bg_inds, pred_class_logits_base, pred_proposal_deltas_base, pred_class_logits_novel, pred_proposal_deltas_novel):
-        """"Merge the classification score and bbox deltas from both base and novel predictors"""
-
-        pred_class_logits = torch.zeros(len(fg_inds)+len(bg_inds), self.num_classes+1).to(self.device)
-        pred_class_logits_base_part = (torch.ones(len(fg_inds), self.num_classes+1)*-10000).to(self.device)
-        pred_class_logits_novel_part = (torch.ones(len(bg_inds), self.num_classes+1)*-10000).to(self.device)
-        
-        pred_proposal_deltas = torch.zeros(len(fg_inds)+len(bg_inds), self.num_classes*4).to(self.device)
-        pred_proposal_deltas_base_part = torch.zeros(len(fg_inds), self.num_classes*4).to(self.device)
-        pred_proposal_deltas_novel_part = torch.zeros(len(bg_inds), self.num_classes*4).to(self.device)
-
-        IDMAP = self.metadata['thing_dataset_id_to_contiguous_id']
-
-        for k, i in self.metadata['base_dataset_id_to_contiguous_id'].items():
-            pred_class_logits_base_part[:, IDMAP[k]] = pred_class_logits_base[fg_inds,i]
-            pred_proposal_deltas_base_part[:, IDMAP[k]*4:(IDMAP[k]+1)*4] = pred_proposal_deltas_base[fg_inds, i*4:(i+1)*4]
-        # TODO for test
-        pred_class_logits_base_part[:,-1] = pred_class_logits_base[fg_inds, -1]
-
-        for k, i in self.metadata['novel_dataset_id_to_contiguous_id'].items():
-            pred_class_logits_novel_part[:, IDMAP[k]] = pred_class_logits_novel[:,i]
-            pred_proposal_deltas_novel_part[:, IDMAP[k]*4:(IDMAP[k]+1)*4] = pred_proposal_deltas_novel[:, i*4:(i+1)*4]
-        # # assign the score for background
-        # pred_class_logits_novel_part[:,-1] = pred_class_logits_novel[:,-1]
-
-        for k, i in self.metadata['base_dataset_id_to_contiguous_id'].items():
-            pred_class_logits_novel_part[:, IDMAP[k]] = pred_class_logits_base[bg_inds,i]
-            pred_proposal_deltas_novel_part[:, IDMAP[k]*4:(IDMAP[k]+1)*4] = pred_proposal_deltas_base[bg_inds, i*4:(i+1)*4]
-        # TODO for test
-        pred_class_logits_novel_part[:,-1] = pred_class_logits_base[bg_inds, -1]
-
-        pred_class_logits[fg_inds, :] = pred_class_logits_base_part
-        pred_class_logits[bg_inds, :] = pred_class_logits_novel_part
-
-        pred_proposal_deltas[fg_inds, :] = pred_proposal_deltas_base_part
-        pred_proposal_deltas[bg_inds, :] = pred_proposal_deltas_novel_part
-
-        return pred_class_logits, pred_proposal_deltas
-
-    # TODO
-    # check the output
-    # check the output of the proposal
+    # TODO LVIS compile this function with batch SCG
     def extract_features(self, images, features, proposals, targets=None, extract_gt_box_features = False):
         """
         Extract features from the input data
@@ -1026,10 +1007,1075 @@ class TwoStageROIHeads(ROIHeads):
             features, [x.proposal_boxes for x in proposals]
         )
         box_features = self.box_head(box_features)
+        
+        # if self.lvis:
+        #     # NOTE for LVIS, the model will be trained directly on novel dataset
+        #     proposals_novel = proposals
+        #     box_features_novel = box_features
+        # else:
+        pred_class_logits_base, pred_proposal_deltas_base = self.box_predictor_base(box_features)
+        pred_instances_base, bg_inds, proposals_novel = self.detection_filter(proposals, pred_class_logits_base, pred_proposal_deltas_base)
+
+        box_features_novel = box_features[bg_inds] if bg_inds.shape[0] != 0 else torch.tensor([]).to(self.device)
+        # embed()
+        return proposals_novel, box_features_novel
+
+    # TODO filter the novel classes and only extract the novel classes
+    def _extract_gt_features_box(self, features, targets):
+        """
+        Forward logic of the box prediction branch for extracting features for ground truth bbox.
+
+        Args:
+            features (list[Tensor]): #level input features for box prediction
+            targets (list[Instances]): the per-image ground truth of Instances.
+                Each has fields "gt_classes", "gt_boxes".
+
+        Returns:
+            In training, extracted features (list[Tensor]), gt_classes (list[Tensor])
+        """
+        # TODO this has not been adapted for the two stage training
+        assert self.training, "Model was changed to eval mode!"                
+        # extract features for all ground truth boxes
+        gt_box_features = self.box_pooler(
+            features, [x.gt_boxes for x in targets]
+        )
+        gt_box_features = self.box_head(gt_box_features)
+        
+        gt_classes = [x.gt_classes for x in targets]
+        
+        return gt_box_features, gt_classes
+
+    def losses_from_features(self, box_features, proposals, weights = None, super_cat:str = None):
+        """
+        Forward logic of the box prediction branch for computing losses.
+
+        Args:
+            features (list[Tensor]): #level input features for box prediction
+            proposals (list[Instances]): the per-image object proposals with
+                their matching ground truth.
+                Each has fields "proposal_boxes", and "objectness_logits",
+                "gt_classes", "gt_boxes".
+
+        Returns:
+            In training, a dict of losses.
+        """
+        assert self.training, "Model was changed to eval mode!"
+       
+        pred_class_logits_novel, pred_proposal_deltas_novel = self.box_predictor(
+            box_features, weights
+        )
+        del box_features
+        # print('loss')
+        # embed()
+        outputs_novel = FastRCNNOutputs(
+            self.box2box_transform,
+            pred_class_logits_novel,
+            pred_proposal_deltas_novel,
+            proposals,
+            self.smooth_l1_beta,
+        )
+
+        return outputs_novel.losses()
+
+# NOTE HDAROIHeads for new setting
+@ROI_HEADS_REGISTRY.register()
+class HDAROIHeads(ROIHeads):
+    """
+    It's "standard" in a sense that there is no ROI transform sharing
+    or feature sharing between tasks.
+    The cropped rois go to separate branches directly.
+    This way, it is easier to make separate abstractions for different branches.
+
+    This class is used by most models, such as FPN and C5.
+    To implement more models, you can subclass it and implement a different
+    :meth:`forward()` or a head.
+    """
+
+    def __init__(self, cfg, input_shape):
+        super(HDAROIHeads, self).__init__(cfg, input_shape)
+        self._init_box_head(cfg)
+
+    def _init_box_head(self, cfg):
+        # fmt: off
+        pooler_resolution = cfg.MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION
+        pooler_scales     = tuple(1.0 / self.feature_strides[k] for k in self.in_features)
+        sampling_ratio    = cfg.MODEL.ROI_BOX_HEAD.POOLER_SAMPLING_RATIO
+        pooler_type       = cfg.MODEL.ROI_BOX_HEAD.POOLER_TYPE
+        # fmt: on
+
+        # If StandardROIHeads is applied on multiple feature maps (as in FPN),
+        # then we share the same predictors and therefore the channel counts must be the same
+        in_channels = [self.feature_channels[f] for f in self.in_features]
+        # Check all channel counts are equal
+        assert len(set(in_channels)) == 1, in_channels
+        in_channels = in_channels[0]
+
+        self.box_pooler = ROIPooler(
+            output_size=pooler_resolution,
+            scales=pooler_scales,
+            sampling_ratio=sampling_ratio,
+            pooler_type=pooler_type,
+        )
+        # Here we split "box head" and "box predictor", which is mainly due to historical reasons.
+        # They are used together so the "box predictor" layers should be part of the "box head".
+        # New subclasses of ROIHeads do not need "box predictor"s.
+        self.box_head = build_box_head(
+            cfg,
+            ShapeSpec(
+                channels=in_channels,
+                height=pooler_resolution,
+                width=pooler_resolution,
+            ),
+        )
+        output_layer = cfg.MODEL.ROI_HEADS.OUTPUT_LAYER
+        output_layer_base_super_cat = "HDABaseCatFastRCNNOutputLayers"
+
+        # TODO num_classes_base_hier1 = 42, num_classes_base_hier2 = 60, num_classes
+        # self.num_classes_base = cfg.MODEL.ROI_HEADS.NUM_CLASSES_BASE
+        # self.num_classes_novel = cfg.MODEL.ROI_HEADS.NUM_CLASSES_NOVEL
+
+        self.num_classes_dict = {
+            'hier1_fg': cfg.MODEL.ROI_HEADS.NUM_CLASSES_HIER1,
+            'hier2_fg': cfg.MODEL.ROI_HEADS.NUM_CLASSES_HIER2_FG,
+            'hier2_bg': cfg.MODEL.ROI_HEADS.NUM_CLASSES_HIER2_BG,
+            'hier2_animal': cfg.MODEL.ROI_HEADS.NUM_CLASSES_HIER2_FG_ANIMAL,
+            'hier2_food': cfg.MODEL.ROI_HEADS.NUM_CLASSES_HIER2_FG_FOOD
+        }
+    
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        
+        # TODO modify the metadata function to return the needed data
+        self.hda_meta_info = HDAMetaInfo()
+        metadata = self.get_metadata(cfg.DATASETS.TRAIN[0])
+        self.idmaps = self.init_idmaps(metadata, self.hda_meta_info)
+
+        self.animal_class_id = self.idmaps['idmap_hier1_global'][self.hda_meta_info.base_model_cats_name2id['animal']]
+        self.food_class_id = self.idmaps['idmap_hier1_global'][self.hda_meta_info.base_model_cats_name2id['food']]
+        
+        
+        # Frozen base predictor 
+        self.box_predictor_base = ROI_HEADS_OUTPUT_REGISTRY.get(output_layer)(
+            cfg,
+            self.box_head.output_size,
+            # NOTE HDA num of base classes should be 42 for the first hier level (also related to the weight initialization)
+            self.num_classes_dict['hier1_fg'],
+            self.cls_agnostic_bbox_reg,
+        )
+
+        # Learnable predictor for background classes
+        self.box_predictor_bg = ROI_HEADS_OUTPUT_REGISTRY.get(output_layer)(
+            cfg,
+            self.box_head.output_size,
+            self.num_classes_dict['hier2_bg'],
+            self.cls_agnostic_bbox_reg,
+        )
+        # NOTE TODO for the predictor of animal and food, no bg class needs to be predicted
+        # NOTE TODO further processing of the predicted scores
+        # Learnable predictor for superclass animal
+        self.box_predictor_animal = ROI_HEADS_OUTPUT_REGISTRY.get(output_layer)(
+            cfg,
+            self.box_head.output_size,
+            self.num_classes_dict['hier2_animal'],
+            self.cls_agnostic_bbox_reg,
+            super_base_class = True
+        )
+        # Learnable predictor for superclass food
+        self.box_predictor_food = ROI_HEADS_OUTPUT_REGISTRY.get(output_layer)(
+            cfg,
+            self.box_head.output_size,
+            self.num_classes_dict['hier2_food'],
+            self.cls_agnostic_bbox_reg,
+            super_base_class = True
+        )
+
+        self.iter_count = 0
+
+        self.with_gt = False
+
+    # TODO depending on what metadata is needed in the following section
+    def get_metadata(self, dataset_name):
+        # NOTE HDA the metadata for coco to get is coco_fewshot_hda_all
+        # currently the task is only designed for dataset coco_hda_all
+        if 'coco' in dataset_name:
+            metadata = _get_builtin_metadata('coco_fewshot_hda_all')
+        return metadata
+
+    def init_idmaps(self, metadata, hda_meta_info: HDAMetaInfo):
+        idmap_hier1_global = hda_meta_info.get_meta_hda_base()['base_dataset_id_to_contiguous_id']
+        idmap_hier1_global_reversed = {v: k for k, v in idmap_hier1_global.items()}
+
+        idmap_hier2_global = metadata['thing_dataset_id_to_contiguous_id']
+        idmap_hier2_global_reversed = {v: k for k, v in idmap_hier2_global.items()}
+
+        idmap_hier2_fg = metadata['base_dataset_id_to_contiguous_id']
+        idmap_hier2_fg_reversed = {v: k for k, v in idmap_hier2_fg.items()}
+        hier2_fg_class_ids_global = [idmap_hier2_global[k] for k in idmap_hier2_fg.keys()]
+
+        idmap_hier2_bg = metadata['novel_dataset_id_to_contiguous_id']
+        idmap_hier2_bg_reversed = {v: k for k, v in idmap_hier2_bg.items()}
+        hier2_bg_class_ids_global = [idmap_hier2_global[k] for k in idmap_hier2_bg.keys()]
+
+        idmap_hier2_animal = {child_cat: i for i, child_cat in enumerate(hda_meta_info.super_cats_to_child_cats_idmap[hda_meta_info.super_cats_name2id['animal']])}
+        idmap_hier2_animal_reversed = {v: k for k, v in idmap_hier2_animal.items()}
+        hier2_animal_class_ids_global = [idmap_hier2_global[k] for k in idmap_hier2_animal.keys()]
+
+        idmap_hier2_food = {child_cat: i for i, child_cat in enumerate(hda_meta_info.super_cats_to_child_cats_idmap[hda_meta_info.super_cats_name2id['food']])}
+        idmap_hier2_food_reversed = {v: k for k, v in idmap_hier2_food.items()}
+        hier2_food_class_ids_global = [idmap_hier2_global[k] for k in idmap_hier2_food.keys()]
+
+        return {
+            'idmap_hier1_global': idmap_hier1_global,
+            'idmap_hier1_global_reversed': idmap_hier1_global_reversed,
+
+            'idmap_hier2_global': idmap_hier2_global,
+            'idmap_hier2_global_reversed': idmap_hier2_global_reversed,
+
+            'idmap_hier2_fg': idmap_hier2_fg,
+            'idmap_hier2_fg_reversed': idmap_hier2_fg_reversed,
+            'hier2_fg_class_ids_global': hier2_fg_class_ids_global,
+
+            'idmap_hier2_bg': idmap_hier2_bg,
+            'idmap_hier2_bg_reversed': idmap_hier2_bg_reversed,
+            'hier2_bg_class_ids_global': hier2_bg_class_ids_global,
+
+            'idmap_hier2_animal': idmap_hier2_animal,
+            'idmap_hier2_animal_reversed': idmap_hier2_animal_reversed,
+            'hier2_animal_class_ids_global': hier2_animal_class_ids_global,
+
+            'idmap_hier2_food': idmap_hier2_food,
+            'idmap_hier2_food_reversed': idmap_hier2_food_reversed,
+            'hier2_food_class_ids_global': hier2_food_class_ids_global,
+        }
+        
+    def forward(self, images, features, proposals, targets=None):
+        """
+        See :class:`ROIHeads.forward`.
+        """
+        del images
+        if self.training:
+            proposals = self.label_and_sample_proposals(proposals, targets)
+        elif targets is not None:
+            proposals = self.label_and_sample_proposals(proposals, targets)
+            self.with_gt = True
+        
+        del targets
+
+        features_list = [features[f] for f in self.in_features]
+
+        # if self.training:
+        #     losses = self._forward_box(features_list, proposals)
+        #     return proposals, losses
+        # else:
+        #     pred_instances = self._forward_box(features_list, proposals)
+        #     return pred_instances, {}
+        assert not self.training, "Currently, forward function in HDAROIHeads only support inference!"
+        pred_instances = self._forward_box(features_list, proposals)
+        return pred_instances, {}
+
+    # TODO modify this fuction after detection filter
+    def _forward_box(self, features, proposals):
+        """
+        Forward logic of the box prediction branch.
+
+        Args:
+            features (list[Tensor]): #level input features for box prediction
+            proposals (list[Instances]): the per-image object proposals with
+                their matching ground truth.
+                Each has fields "proposal_boxes", and "objectness_logits",
+                "gt_classes", "gt_boxes".
+
+        Returns:
+            In training, a dict of losses.
+            In inference, a list of `Instances`, the predicted instances.
+        """
+        box_features = self.box_pooler(
+            features, [x.proposal_boxes for x in proposals]
+        )
+        box_features = self.box_head(box_features)
+
+        # NOTE box predictor should be frozen
+        pred_class_logits_base, pred_proposal_deltas_base = self.box_predictor_base(box_features)
+        # TODO TODO change the way to filter fg super class inds with gt labels if it is in training
+        pred_instances_fg_fixed_cats, fg_animal_inds, fg_food_inds, bg_inds, proposals_animal, proposals_food, proposals_bg = self.detection_filter(
+            proposals, pred_class_logits_base, pred_proposal_deltas_base,
+        )
+        
+        # selected base proposals, and corresponding logits and deltas 
+        # NOTE TODO the predictor of animal and food should only output the classification scores
+        pred_class_logits_bg, pred_proposal_deltas_bg = self.box_predictor_bg(box_features[bg_inds])
+        pred_class_logits_animal, pred_proposal_deltas_animal = self.box_predictor_animal(box_features[fg_animal_inds])
+        pred_class_logits_food, pred_proposal_deltas_food = self.box_predictor_food(box_features[fg_food_inds])
+        del box_features
+
+        # TODO implement SGD training here (for batch features)
+
+        # NOTE the _forward_box is now only used for inference 
+        # assert not self.training
+        assert not self.training, "Forward function in HDAROIHeads does not support training!"
+        # NOTE currently in HDA new setting, 
+        pred_instances_fg_fixed_cats = self.fg_child_cat_id_mapping(pred_instances_fg_fixed_cats)    
+        pred_instances_animal = self.fg_super_cat_inference(pred_class_logits_animal, pred_proposal_deltas_animal, proposals_animal, super_cat='animal')
+        pred_instances_food = self.fg_super_cat_inference(pred_class_logits_food, pred_proposal_deltas_food, proposals_food, super_cat='food')
+        
+        pred_instances_bg = self.bg_inference(pred_class_logits_bg, pred_proposal_deltas_bg, proposals_bg)
+
+        pred_instances = self.merge_instances(pred_instances_fg_fixed_cats, pred_instances_animal, pred_instances_food, pred_instances_bg)
+        
+        return pred_instances
+
+    def fg_child_cat_id_mapping(self, pred_instances_fg):
+        idmap_global = self.idmaps['idmap_hier2_global']
+        idmap_local_reversed = self.idmaps['idmap_hier1_global_reversed']
+
+        for pred_instance_fg in pred_instances_fg:
+            for i, pred_class in enumerate(pred_instance_fg.pred_classes.cpu().numpy()):
+                assert pred_class not in [self.animal_class_id, self.food_class_id]
+                pred_instance_fg.pred_classes[i] = idmap_global[idmap_local_reversed[pred_class]]
+
+        return pred_instances_fg
+
+    def fg_super_cat_inference(self, pred_class_logits, pred_proposal_deltas, proposals, super_cat: str):
+        assert super_cat in ['animal', 'food']
+
+        # TODO now, for the inference, look into what is the difference for the inference of super base classes. here we need nms
+        outputs = FastRCNNOutputs(
+            self.box2box_transform,
+            pred_class_logits,
+            pred_proposal_deltas,
+            proposals,
+            self.smooth_l1_beta,
+            super_base_class=True,
+        )
+        # TODO NOTE should add with_gt?
+        pred_instances_fg_super_cat, _ = outputs.inference(
+            self.test_score_thresh,
+            self.test_nms_thresh,
+            self.test_detections_per_img,
+        )
+
+        idmap_global = self.idmaps['idmap_hier2_global']
+        idmap_local_reversed = self.idmaps['idmap_hier2_{}_reversed'.format(super_cat)]
+       
+        for pred_instance_fg_super_cat in pred_instances_fg_super_cat:
+            for i, pred_class in enumerate(pred_instance_fg_super_cat.pred_classes.cpu().numpy()):
+                pred_instance_fg_super_cat.pred_classes[i] = idmap_global[idmap_local_reversed[pred_class]]
+        
+        return pred_instances_fg_super_cat
+
+    def bg_inference(self, pred_class_logits_bg, pred_proposal_deltas_bg, proposals_bg):
+        idmap_global = self.idmaps['idmap_hier2_global']
+        idmap_local_reversed = self.idmaps['idmap_hier2_bg_reversed']
+        outputs_bg = FastRCNNOutputs(
+            self.box2box_transform,
+            pred_class_logits_bg,
+            pred_proposal_deltas_bg,
+            proposals_bg,
+            self.smooth_l1_beta,
+        )
+        pred_instances_bg, _ = outputs_bg.inference(
+            self.test_score_thresh,
+            self.test_nms_thresh,
+            self.test_detections_per_img,
+            with_gt = self.with_gt,
+        )
+
+        for pred_instance_bg in pred_instances_bg:
+            for i, pred_class in enumerate(pred_instance_bg.pred_classes.cpu().numpy()):
+                pred_instance_bg.pred_classes[i] = idmap_global[idmap_local_reversed[pred_class]]
+        
+        return pred_instances_bg
+
+    # TODO now, pred_instances_animal, pred_instances_food also included.
+    def merge_instances(self, pred_instances_fg_fixed_cats, pred_instances_animal, pred_instances_food, pred_instances_bg):
+        pred_instances = list([])
+        for instance_fg_fixed_cats, instance_animal, instance_food, instance_bg in zip(pred_instances_fg_fixed_cats, pred_instances_animal, pred_instances_food, pred_instances_bg):
+            instance = Instances(instance_fg_fixed_cats.image_size)
+            instance.pred_boxes = Boxes(torch.cat((instance_fg_fixed_cats.pred_boxes.tensor, instance_animal.pred_boxes.tensor, instance_food.pred_boxes.tensor, instance_bg.pred_boxes.tensor)))
+            instance.scores = torch.cat((instance_fg_fixed_cats.scores, instance_animal.scores, instance_food.scores, instance_bg.scores))
+            instance.pred_classes = torch.cat((instance_fg_fixed_cats.pred_classes, instance_animal.pred_classes, instance_food.pred_classes, instance_bg.pred_classes))
+            if instance_fg_fixed_cats.has("gt_classes"):
+                instance.gt_classes = torch.cat((instance_fg_fixed_cats.gt_classes, instance_animal.gt_classes, instance_food.gt_classes, instance_bg.gt_classes))
+            pred_instances.append(instance)
+        return pred_instances
+
+    def detection_filter(self, proposals, pred_class_logits_base, pred_proposal_deltas_base):
+        outputs_base_simulator = FastRCNNOutputs(
+            self.box2box_transform,
+            pred_class_logits_base,
+            pred_proposal_deltas_base,
+            proposals,
+            self.smooth_l1_beta,
+        )
+
+        pred_instances_fg, fg_inds_local_list = outputs_base_simulator.inference(
+            self.test_score_thresh,
+            self.test_nms_thresh,
+            self.test_detections_per_img,
+            with_gt = self.with_gt,
+        )
+        
+        pred_instances_fg_fixed_cats = list([])
+        num_preds_per_image = [len(p) for p in proposals]
+        # fg_inds = torch.tensor([]).to(self.device)
+        fg_animal_inds = torch.tensor([]).to(self.device)
+        fg_food_inds = torch.tensor([]).to(self.device)
+        bg_inds = torch.tensor([]).to(self.device)
+
+        # NOTE HDA proposals_base will also be needed in training
+        # proposals_base = None if self.training else list([]) 
+        proposals_animal = list([])
+        proposals_food = list([])
+        proposals_bg = list([])
+        # proposals_novel = list([])
+        
+        # pred_classes = pred_class_logits_base.argmax(dim=1)
+        bg_class_id = pred_class_logits_base.shape[1]-1
+        bg_score_max_bool_list = (pred_class_logits_base.argmax(dim=-1) == bg_class_id).split(num_preds_per_image, dim=0)
+        animal_score_max_bool_list = (pred_class_logits_base.argmax(dim=-1) == self.animal_class_id).split(num_preds_per_image, dim=0)
+        food_score_max_bool_list = (pred_class_logits_base.argmax(dim=-1) == self.food_class_id).split(num_preds_per_image, dim=0)
+        
+        num_preds_per_image = torch.tensor(num_preds_per_image).long()
+        
+        # NOTE HDA here we filter the proposals for animal, food, and background
+        # TODO: replace the hardcode of animal, food id to contiguous id
+        for i, (
+            pred_instance_fg, fg_inds_local, proposal, num_preds, bg_score_max_bool, animal_score_max_bool, food_score_max_bool
+            ) in enumerate(
+            zip(pred_instances_fg, fg_inds_local_list, proposals, num_preds_per_image, bg_score_max_bool_list, animal_score_max_bool_list, food_score_max_bool_list)
+            ):
+            
+            pred_instance_fg_fixed_cats_bool = torch.logical_and(pred_instance_fg.pred_classes!=self.animal_class_id, pred_instance_fg.pred_classes!=self.food_class_id)
+            fg_fixed_cats_inds_local = fg_inds_local[pred_instance_fg_fixed_cats_bool]
+            fg_animal_inds_local = torch.tensor([i for i in torch.arange(num_preds).to(self.device)[animal_score_max_bool] if i not in fg_fixed_cats_inds_local]).long().to(self.device)
+            fg_food_inds_local = torch.tensor([i for i in torch.arange(num_preds).to(self.device)[food_score_max_bool] if i not in fg_fixed_cats_inds_local]).long().to(self.device)
+            bg_inds_local = torch.tensor([i for i in torch.arange(num_preds).to(self.device)[bg_score_max_bool] if i not in fg_fixed_cats_inds_local]).long().to(self.device)
+            if self.training:
+                assert proposal.has('gt_classes')
+                fg_animal_inds_local = torch.tensor([ind for ind in fg_animal_inds_local if proposal.gt_classes[ind] in self.idmaps['hier2_animal_class_ids_global']]).long().to(self.device)
+                fg_food_inds_local = torch.tensor([ind for ind in fg_food_inds_local if proposal.gt_classes[ind] in self.idmaps['hier2_food_class_ids_global']]).long().to(self.device)
+
+            pred_instance_fg_fixed_cats = self.instance_filter(pred_instance_fg, pred_instance_fg_fixed_cats_bool)
+            pred_instances_fg_fixed_cats.append(pred_instance_fg_fixed_cats)
+            
+            fg_animal_inds = torch.cat((fg_animal_inds, torch.sum(num_preds_per_image[:i])+fg_animal_inds_local)).long()
+            fg_food_inds = torch.cat((fg_food_inds, torch.sum(num_preds_per_image[:i])+fg_food_inds_local)).long()
+            bg_inds = torch.cat((bg_inds, torch.sum(num_preds_per_image[:i])+bg_inds_local)).long()
+            
+            proposals_animal.append(self.proposal_filter(proposal, fg_animal_inds_local, super_cat = 'animal'))
+            proposals_food.append(self.proposal_filter(proposal, fg_food_inds_local, super_cat = 'food'))
+            proposals_bg.append(self.proposal_filter(proposal, bg_inds_local, super_cat = 'bg'))
+
+        return pred_instances_fg_fixed_cats, fg_animal_inds, fg_food_inds, bg_inds, proposals_animal, proposals_food, proposals_bg
+
+    def instance_filter(self, instance, inds):
+        filtered_instance = Instances(instance.image_size)
+        filtered_instance.pred_boxes = Boxes(instance.pred_boxes.tensor[inds])
+        filtered_instance.scores = instance.scores[inds]
+        filtered_instance.pred_classes = instance.pred_classes[inds]
+        if instance.has("gt_classes"):
+            filtered_instance.gt_classes = instance.gt_classes[inds]
+        return filtered_instance
+        
+    def proposal_filter(self, proposal, inds, super_cat: str):
+        assert super_cat in ['bg', 'animal', 'food']
+
+        proposal_filtered = Instances(proposal.image_size)
+        proposal_filtered.proposal_boxes = Boxes(proposal.proposal_boxes.tensor[inds])
+        proposal_filtered.objectness_logits = proposal.objectness_logits[inds]
+        
+        # only for training we have the gt_classes
+        if proposal.has('gt_boxes'):
+            proposal_filtered.gt_boxes = Boxes(proposal.gt_boxes.tensor[inds])
+
+            assert proposal.has('gt_classes')
+
+            if self.with_gt == True:
+                proposal_filtered.gt_classes = proposal.gt_classes[inds]
+            else:
+
+                idmap_global_reversed = self.idmaps['idmap_hier2_global_reversed']
+                idmap_local = self.idmaps['idmap_hier2_{}'.format(super_cat)]
+                
+                # idmap_local map the child cat id to contiguous local id
+                # NOTE HDA the num_classes_base here should be 60 child classes rather than 42
+                gt_classes_filtered = proposal.gt_classes[inds]
+                gt_classes_mapped = torch.zeros(gt_classes_filtered.shape).to(self.device)
+
+                if super_cat == 'bg':
+                    bg_class_id_global = self.num_classes_dict['hier2_fg']+self.num_classes_dict['hier2_bg']
+                    bg_class_id_local = self.num_classes_dict['hier2_bg']
+                    other_class_ids_global = self.idmaps['hier2_fg_class_ids_global'] + [bg_class_id_global]
+                    for i, gt_class in enumerate(gt_classes_filtered.cpu().numpy()):
+                        gt_classes_mapped[i] = bg_class_id_local if gt_class in other_class_ids_global else idmap_local[idmap_global_reversed[gt_class]]
+                else:
+                    for i, gt_class in enumerate(gt_classes_filtered.cpu().numpy()):
+                        gt_classes_mapped[i] = idmap_local[idmap_global_reversed[gt_class]]
+
+                proposal_filtered.gt_classes = gt_classes_mapped.long()
+
+        return proposal_filtered
+
+    # TODO
+    # check the output
+    # check the output of the proposal
+    def extract_features(self, images, features, proposals, targets=None, extract_gt_box_features = False):
+        """
+        Extract features from the input data
+        """
+        del images
+        assert self.training, "Model was changed to eval mode!"
+        proposals = self.label_and_sample_proposals(proposals, targets)
+        # del targets
+
+        features_list = [features[f] for f in self.in_features]
+        extracted_info = self._extract_features_box(features_list, proposals)
+        del targets
+        return extracted_info
+        
+    def _extract_features_box(self, features, proposals):
+        """
+        Forward logic of the box prediction branch for extracting features.
+
+        Args:
+            features (list[Tensor]): #level input features for box prediction
+            proposals (list[Instances]): the per-image object proposals with
+                their matching ground truth.
+                Each has fields "proposal_boxes", and "objectness_logits",
+                "gt_classes", "gt_boxes".
+
+        Returns:
+            In training, extracted features (list[Tensor]).
+        """
+        # TODO replace proposals with targets and x.gt_boxes, one x corresponds to one img, also store gt.classes
+        assert self.training, "Model was changed to eval mode!"
+        box_features = self.box_pooler(
+            features, [x.proposal_boxes for x in proposals]
+        )
+        box_features = self.box_head(box_features)
 
         pred_class_logits_base, pred_proposal_deltas_base = self.box_predictor_base(box_features)
-        fg_inds, bg_inds, proposals_base, proposals_novel = self.detection_filter(proposals, pred_class_logits_base, pred_proposal_deltas_base)
+        # fg_inds, bg_inds, proposals_base, proposals_novel = self.detection_filter(proposals, pred_class_logits_base, pred_proposal_deltas_base)
+        _, fg_animal_inds, fg_food_inds, bg_inds, proposals_animal, proposals_food, proposals_bg = self.detection_filter(
+            proposals, pred_class_logits_base, pred_proposal_deltas_base
+        )
+        box_features_animal = box_features[fg_animal_inds] if fg_animal_inds.shape[0] != 0 else torch.tensor([]).to(self.device)
+        box_features_food = box_features[fg_food_inds] if fg_food_inds.shape[0] != 0 else torch.tensor([]).to(self.device)
+        box_features_bg = box_features[bg_inds] if bg_inds.shape[0] != 0 else torch.tensor([]).to(self.device)
+
+        extracted_info = {
+            'proposals_animal': proposals_animal,
+            'box_features_animal': box_features_animal,
+            'proposals_food': proposals_food,
+            'box_features_food': box_features_food,
+            'proposals_bg': proposals_bg,
+            'box_features_bg': box_features_bg,
+            }
+
+        # print('extracted_info')
+        # embed()
+        return extracted_info
+
+    def losses_from_features(self, box_features, proposals, weights = None, super_cat:str = 'bg'):
+        """
+        Forward logic of the box prediction branch for computing losses.
+
+        Args:
+            features (list[Tensor]): #level input features for box prediction
+            proposals (list[Instances]): the per-image object proposals with
+                their matching ground truth.
+                Each has fields "proposal_boxes", and "objectness_logits",
+                "gt_classes", "gt_boxes".
+
+        Returns:
+            In training, a dict of losses.
+        """
+        assert self.training, "Model was changed to eval mode!"
+        # TODO for training, the following code only has to be done once, as both the box_features and box_predictor_base are fixed
+        # pred_class_logits_base, pred_proposal_deltas_base = self.box_predictor_base(box_features)
+        # fg_inds, bg_inds, proposals_base, proposals_novel = self.detection_filter(proposals, pred_class_logits_base, pred_proposal_deltas_base)
+        # pred_class_logits_base, pred_proposal_deltas_base = pred_class_logits_base[fg_inds], pred_proposal_deltas_base[fg_inds]
+       
+        assert super_cat in ['bg', 'animal', 'food']
+        if super_cat == 'bg':
+            pred_class_logits_bg, pred_proposal_deltas_bg = self.box_predictor_bg(
+                box_features, weights
+            )
+            del box_features
+            
+            # output loss for a certain super class in training, same for forward of SGD
+            outputs_bg = FastRCNNOutputs(
+                self.box2box_transform,
+                pred_class_logits_bg,
+                pred_proposal_deltas_bg,
+                proposals,
+                self.smooth_l1_beta,
+            )
+                
+            return outputs_bg.losses()
+
+        elif super_cat =='animal':
+            pred_class_logits_animal, pred_proposal_deltas_animal = self.box_predictor_animal(
+                box_features, weights
+            )
+            del box_features
+
+            outputs_animal = FastRCNNOutputs(
+                self.box2box_transform,
+                pred_class_logits_animal,
+                pred_proposal_deltas_animal,
+                proposals,
+                self.smooth_l1_beta,
+                super_base_class=True,
+            )
+
+            # self.iter_count +=1
+            # if self.iter_count % 10 == 0:
+            #     print('animal')
+            #     embed()
+
+            return outputs_animal.losses()
+            # return {'loss_cls_{}'.format(super_cat): self.cls_loss(pred_class_logits_animal, proposals)}
+            
+        elif super_cat == 'food':
+            pred_class_logits_food, pred_proposal_deltas_food = self.box_predictor_food(
+                box_features, weights
+            )
+            del box_features
+
+            outputs_food = FastRCNNOutputs(
+                self.box2box_transform,
+                pred_class_logits_food,
+                pred_proposal_deltas_food,
+                proposals,
+                self.smooth_l1_beta,
+                super_base_class=True,
+            )
+
+            return outputs_food.losses()
+            # return {'loss_cls_{}'.format(super_cat): self.cls_loss(pred_class_logits_food, proposals)}
+            
     
+    def cls_loss(self, pred_class_logits, proposals):
+        assert proposals[0].has("gt_classes")
+        gt_classes = cat([p.gt_classes for p in proposals], dim=0)
+        
+        return F.cross_entropy(
+            pred_class_logits, gt_classes, reduction="mean"
+        )
+
+@ROI_HEADS_REGISTRY.register()
+class TwoStageROIHeads_lvis_rc(ROIHeads):
+    """
+    It's "standard" in a sense that there is no ROI transform sharing
+    or feature sharing between tasks.
+    The cropped rois go to separate branches directly.
+    This way, it is easier to make separate abstractions for different branches.
+
+    This class is used by most models, such as FPN and C5.
+    To implement more models, you can subclass it and implement a different
+    :meth:`forward()` or a head.
+    """
+
+    def __init__(self, cfg, input_shape):
+        super(TwoStageROIHeads_lvis_rc, self).__init__(cfg, input_shape)
+        self._init_box_head(cfg)
+
+    def _init_box_head(self, cfg):
+        # fmt: off
+        pooler_resolution = cfg.MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION
+        pooler_scales     = tuple(1.0 / self.feature_strides[k] for k in self.in_features)
+        sampling_ratio    = cfg.MODEL.ROI_BOX_HEAD.POOLER_SAMPLING_RATIO
+        pooler_type       = cfg.MODEL.ROI_BOX_HEAD.POOLER_TYPE
+        # fmt: on
+
+        # If StandardROIHeads is applied on multiple feature maps (as in FPN),
+        # then we share the same predictors and therefore the channel counts must be the same
+        in_channels = [self.feature_channels[f] for f in self.in_features]
+        # Check all channel counts are equal
+        assert len(set(in_channels)) == 1, in_channels
+        in_channels = in_channels[0]
+
+        self.box_pooler = ROIPooler(
+            output_size=pooler_resolution,
+            scales=pooler_scales,
+            sampling_ratio=sampling_ratio,
+            pooler_type=pooler_type,
+        )
+        # Here we split "box head" and "box predictor", which is mainly due to historical reasons.
+        # They are used together so the "box predictor" layers should be part of the "box head".
+        # New subclasses of ROIHeads do not need "box predictor"s.
+        self.box_head = build_box_head(
+            cfg,
+            ShapeSpec(
+                channels=in_channels,
+                height=pooler_resolution,
+                width=pooler_resolution,
+            ),
+        )
+        output_layer = cfg.MODEL.ROI_HEADS.OUTPUT_LAYER
+        
+        # NOTE for lvis rc implementation
+        # init the model: base: f+c, novel: c+r
+        # filter the fg_instance to have the detections of only f
+        # proposal filtering, base: f, novel: c+r
+        # note the id mapping, in proposal filtering and merge instance
+        # proposal filtering, only filter the proposals for novel detector (bg score: c+bg), map of id, same as now
+        # merge instance, map the id of fg instance back, the idmap of base needs to be changed.
+
+        # TODO LVIS modify the following params in the config accordingly
+        # NOTE in LVIS training, we trainn it directly on the Rare dataset, so num_classes is 454 when label the bg id
+        self.lvis = True if 'lvis' in cfg.DATASETS.TRAIN[0] else False
+
+        self.num_classes_base = cfg.MODEL.ROI_HEADS.NUM_CLASSES_BASE # f 315
+        self.num_classes_novel = cfg.MODEL.ROI_HEADS.NUM_CLASSES_NOVEL # 915 = c 461 + r 454
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        metadata = self.get_metadata(cfg.DATASETS.TRAIN[0])
+        # metadata = _get_builtin_metadata('coco_fewshot')
+        # TODO lvis c, adjust the idmap here
+        self.idmaps = self.init_idmaps(metadata)
+        self.metadata = metadata
+
+        self.box_predictor_base = ROI_HEADS_OUTPUT_REGISTRY.get(output_layer)(
+            cfg,
+            self.box_head.output_size,
+            # NOTE HDA num of base classes should be 42 for the first hier level (also related to the weight initialization)
+            self.num_classes_base+461,
+            self.cls_agnostic_bbox_reg,
+        )
+        # train it using CG
+        self.box_predictor = ROI_HEADS_OUTPUT_REGISTRY.get(output_layer)(
+            cfg,
+            self.box_head.output_size,
+            self.num_classes_novel,
+            self.cls_agnostic_bbox_reg,
+        )
+        # NOTE HDA add two more roi heads for the child classes of animal and food
+        self.with_gt = False
+
+    def get_metadata(self, dataset_name):
+        metadata = dict({})
+        # NOTE HDA the metadata for coco to get is coco_fewshot_base_all
+        # NOTE LVIS add the meta data of lvis needed for proposal filtering
+        if 'coco' in dataset_name:
+            metadata = _get_builtin_metadata('coco_fewshot')
+        elif 'voc' in dataset_name:
+            sid = int(dataset_name.split('all')[1].split('_')[0])
+            init_metadata = _get_builtin_metadata('pascal_voc_fewshot')
+            metadata['thing_classes'] = init_metadata['thing_classes'][sid]
+            metadata['base_classes'] = init_metadata['base_classes'][sid]
+            metadata['novel_classes'] = init_metadata['novel_classes'][sid]
+            metadata['thing_dataset_id_to_contiguous_id'] = {i:i for i,v in enumerate(metadata['thing_classes'])}
+            metadata['base_dataset_id_to_contiguous_id'] = {i:i for i,v in enumerate(metadata['base_classes'])}
+            metadata['novel_dataset_id_to_contiguous_id'] = {len(metadata['base_classes'])+i:i for i,v in enumerate(metadata['novel_classes'])}
+        elif 'lvis' in dataset_name:
+            # NOTE the metadata used here should contain thing, base, novel, which coulld be different to the metadata of the dataset
+            # if the novel detector is trained directly on the Rare dataset, then the metadata here will only be used in inference.
+            assert len(LVIS_CATEGORIES) == 1230 
+            cat_ids = [k["id"] for k in LVIS_CATEGORIES]
+            assert min(cat_ids) == 1 and max(cat_ids) == len(cat_ids), "Category ids are not in [1, #categories], as expected"
+            
+            # Ensure that the category list is sorted by id
+            lvis_categories = [k for k in sorted(LVIS_CATEGORIES, key=lambda x: x["id"])]
+            thing_classes = [k["synonyms"][0] for k in lvis_categories]
+            
+            assert self.num_classes_novel == 915
+            lvis_categories_novel = [k for k in sorted(LVIS_CATEGORIES, key=lambda x: x["id"]) if k["frequency"] in ['c', 'r']]
+            novel_classes = [k["synonyms"][0] for k in lvis_categories_novel]
+            
+            lvis_categories_base = [k for k in sorted(LVIS_CATEGORIES, key=lambda x: x["id"]) if k["frequency"] in ['f', 'c']]
+            base_classes = [k["synonyms"][0] for k in lvis_categories_base if k["frequency"]=='f']
+
+
+            metadata["thing_classes"]= thing_classes
+            metadata["thing_dataset_id_to_contiguous_id"] = {x["id"]:i for i,x in enumerate(lvis_categories)}
+            metadata["novel_classes"] = novel_classes
+            metadata["novel_dataset_id_to_contiguous_id"] = {x["id"]:i for i,x in enumerate(lvis_categories_novel)}
+            # NOTE the base map should have both f and c and then filter out c, to be consistent with the base detector
+            metadata["base_classes"] = base_classes
+            metadata["base_dataset_id_to_contiguous_id"] = {x["id"]:i for i,x in enumerate(lvis_categories_base) if x["frequency"]=='f'}
+            
+            metadata["base_detector_bg_ids"] = [i for i, x in enumerate(lvis_categories_base) if x["frequency"]=='c']+[len(lvis_categories_base)]
+            metadata["novel_detector_c_ids"] = [i for i, x in enumerate(lvis_categories_novel) if x["frequency"]=='c']
+            metadata["novel_detector_r_ids"] = [i for i, x in enumerate(lvis_categories_novel) if x["frequency"]=='r']
+
+        return metadata
+
+    # TODO LVIS new init_idmaps for LVIS or put it in a separate class
+    def init_idmaps(self, metadata):
+        idmap_global = metadata['thing_dataset_id_to_contiguous_id']
+        idmap_global_reversed = {v: k for k, v in idmap_global.items()}
+
+        idmap_base = metadata['base_dataset_id_to_contiguous_id']
+        idmap_base_reversed = {v: k for k, v in idmap_base.items()}
+        base_class_ids_global = [idmap_global[k] for k in idmap_base.keys()]
+
+        idmap_novel = metadata['novel_dataset_id_to_contiguous_id']
+        idmap_novel_reversed = {v: k for k, v in idmap_novel.items()}
+        novel_class_ids_global = [idmap_global[k] for k in idmap_novel.keys()]
+
+        return {
+            'idmap_global': idmap_global,
+            'idmap_global_reversed': idmap_global_reversed,
+            'idmap_base': idmap_base,
+            'idmap_base_reversed': idmap_base_reversed,
+            'base_class_ids_global': base_class_ids_global,
+            'idmap_novel': idmap_novel,
+            'idmap_novel_reversed': idmap_novel_reversed,
+            'novel_class_ids_global': novel_class_ids_global,
+        }
+        
+    def forward(self, images, features, proposals, targets=None):
+        """
+        See :class:`ROIHeads.forward`.
+        """
+        del images
+        if self.training:
+            proposals = self.label_and_sample_proposals(proposals, targets)
+        # NOTE gt
+        elif targets is not None:
+            proposals = self.label_and_sample_proposals(proposals, targets)
+            self.with_gt = True
+        
+        del targets
+
+        features_list = [features[f] for f in self.in_features]
+        
+        if self.training:
+            losses = self._forward_box(features_list, proposals)
+            return proposals, losses
+        else:
+            pred_instances = self._forward_box(features_list, proposals)
+            return pred_instances, {}
+    
+    def _forward_box(self, features, proposals):
+        """
+        Forward logic of the box prediction branch.
+
+        Args:
+            features (list[Tensor]): #level input features for box prediction
+            proposals (list[Instances]): the per-image object proposals with
+                their matching ground truth.
+                Each has fields "proposal_boxes", and "objectness_logits",
+                "gt_classes", "gt_boxes".
+
+        Returns:
+            In training, a dict of losses.
+            In inference, a list of `Instances`, the predicted instances.
+        """
+        box_features = self.box_pooler(
+            features, [x.proposal_boxes for x in proposals]
+        )
+        box_features = self.box_head(box_features)
+
+        # NOTE If the dataset is LVIS and it is in training mode, then filtering is not needed as train the model directly on Rare dataset
+        # Overall the forward_box function is only used for batch case, for both training and inference
+        # actually currently this function only support the training for LVIS dataset, in SCG case (also SGD in the future)
+        
+        # if self.training and self.lvis:
+        #     pred_class_logits_novel, pred_proposal_deltas_novel = self.box_predictor(box_features)
+        #     proposals_novel = proposals
+        # else:
+        pred_class_logits_base, pred_proposal_deltas_base = self.box_predictor_base(box_features)
+        pred_instances_base, bg_inds, proposals_novel = self.detection_filter(proposals, pred_class_logits_base, pred_proposal_deltas_base)
+        
+        # selected base proposals, and corresponding logits and deltas 
+        # pred_class_logits_base, pred_proposal_deltas_base = pred_class_logits_base[fg_inds], pred_proposal_deltas_base[fg_inds]
+        pred_class_logits_novel, pred_proposal_deltas_novel = self.box_predictor(box_features[bg_inds])
+        
+        del box_features
+
+        # NOTE gt
+        outputs_novel = FastRCNNOutputs(
+            self.box2box_transform,
+            pred_class_logits_novel,
+            pred_proposal_deltas_novel,
+            proposals_novel,
+            self.smooth_l1_beta,
+        )
+
+        if self.training:
+            return outputs_novel.losses()
+        else:
+            pred_instances_novel, _ = outputs_novel.inference(
+                self.test_score_thresh,
+                self.test_nms_thresh,
+                self.test_detections_per_img,
+                with_gt = self.with_gt,
+            )
+            pred_instances = self.merge_instances(pred_instances_base, pred_instances_novel)
+        
+            return pred_instances
+  
+    def merge_instances(self, pred_instances_base, pred_instances_novel):
+        idmap_global = self.idmaps['idmap_global']
+        idmap_base_reversed = self.idmaps['idmap_base_reversed']
+        idmap_novel_reversed = self.idmaps['idmap_novel_reversed']
+
+        pred_instances = list([])
+        for instance_base, instance_novel in zip(pred_instances_base, pred_instances_novel):
+            assert instance_base.image_size == instance_novel.image_size
+            instance = Instances(instance_base.image_size)
+            instance.pred_boxes = Boxes(torch.cat((instance_base.pred_boxes.tensor, instance_novel.pred_boxes.tensor)))
+            instance.scores = torch.cat((instance_base.scores, instance_novel.scores))
+
+            pred_classes_mapped_base = torch.zeros(instance_base.pred_classes.shape).to(self.device)
+            for i, pred_class in enumerate(instance_base.pred_classes.cpu().numpy()):
+                pred_classes_mapped_base[i] = idmap_global[idmap_base_reversed[pred_class]]
+
+            pred_classes_mapped_novel = torch.zeros(instance_novel.pred_classes.shape).to(self.device)
+            for i, pred_class in enumerate(instance_novel.pred_classes.cpu().numpy()):
+                pred_classes_mapped_novel[i] = idmap_global[idmap_novel_reversed[pred_class]]
+            
+            instance.pred_classes = torch.cat((pred_classes_mapped_base, pred_classes_mapped_novel))
+            # NOTE gt
+            if instance_base.has("gt_classes"):
+                instance.gt_classes = torch.cat((instance_base.gt_classes, instance_novel.gt_classes))
+            pred_instances.append(instance)
+    
+        return pred_instances
+
+    def detection_filter(self, proposals, pred_class_logits_base, pred_proposal_deltas_base):
+        # NOTE for test
+        outputs_base_simulator = FastRCNNOutputs(
+            self.box2box_transform,
+            pred_class_logits_base,
+            pred_proposal_deltas_base,
+            proposals,
+            self.smooth_l1_beta,
+        )
+
+        # NOTE gt
+        pred_instances_fg, fg_inds_local_list = outputs_base_simulator.inference(
+            self.test_score_thresh,
+            self.test_nms_thresh,
+            self.test_detections_per_img,
+            with_gt = self.with_gt,
+        )
+        pred_instances_fg_f = list([])
+        # embed()
+        # NOTE lvis rc, local base ids for f and c respectively, to filter the fg instance and select background proposals
+        num_preds_per_image = [len(p) for p in proposals]
+        # fg_inds = torch.tensor([]).to(self.device)
+        bg_inds = torch.tensor([]).to(self.device)
+        # NOTE HDA proposals_base will also be needed in training
+        # proposals_base = None if self.training else list([]) 
+        proposals_novel = list([])
+        
+        pred_classes = pred_class_logits_base.argmax(dim=1)
+        # bg_class_id = pred_class_logits_base.shape[1]-1
+        # bg_score_max_bool_list = (pred_classes == bg_class_id).split(num_preds_per_image, dim=0)
+        bg_class_ids = set(self.metadata["base_detector_bg_ids"])
+        bg_score_max_bool_list = torch.tensor([pred_class in bg_class_ids for pred_class in pred_classes.cpu().numpy()]).to(self.device).split(num_preds_per_image, dim=0)
+        
+        num_preds_per_image = torch.tensor(num_preds_per_image).long()
+    
+        # NOTE HDA here we filter the proposals for animal, food, and background
+        for i, (pred_instance_fg, fg_inds_local, proposal, num_preds, bg_score_max_bool) in enumerate(zip(pred_instances_fg, fg_inds_local_list, proposals, num_preds_per_image, bg_score_max_bool_list)):
+            fg_inds_local_f_bool = torch.tensor([pred_class not in bg_class_ids for pred_class in pred_instance_fg.pred_classes.cpu().numpy()]).to(self.device)
+            fg_inds_local_f = fg_inds_local[fg_inds_local_f_bool]
+            bg_inds_local = torch.tensor([i for i in torch.arange(num_preds).to(self.device)[bg_score_max_bool] if i not in fg_inds_local_f]).long().to(self.device)
+        
+            # NOTE TODO check here the index out of bound in instance filter?
+            pred_instance_fg_f = self.instance_filter(pred_instance_fg, fg_inds_local_f_bool)
+            pred_instances_fg_f.append(pred_instance_fg_f)
+
+            bg_inds = torch.cat((bg_inds, torch.sum(num_preds_per_image[:i])+bg_inds_local)).long()
+            proposals_novel.append(self.proposal_filter(proposal, bg_inds_local, novel = True))
+            
+        # return pred_instances_fg, fg_inds, bg_inds, proposals_base, proposals_novel
+        return pred_instances_fg_f, bg_inds, proposals_novel
+
+    def instance_filter(self, instance, inds):
+        filtered_instance = Instances(instance.image_size)
+        filtered_instance.pred_boxes = Boxes(instance.pred_boxes.tensor[inds])
+        filtered_instance.scores = instance.scores[inds]
+        filtered_instance.pred_classes = instance.pred_classes[inds]
+        if instance.has("gt_classes"):
+            filtered_instance.gt_classes = instance.gt_classes[inds]
+        return filtered_instance
+
+    def proposal_filter(self, proposal, inds, novel = False):
+        proposal_filtered = Instances(proposal.image_size)
+        proposal_filtered.proposal_boxes = Boxes(proposal.proposal_boxes.tensor[inds])
+        proposal_filtered.objectness_logits = proposal.objectness_logits[inds]
+        
+        # only for training we have the gt_classes
+        if proposal.has('gt_boxes'):
+            proposal_filtered.gt_boxes = Boxes(proposal.gt_boxes.tensor[inds])
+
+            assert proposal.has('gt_classes')
+            if self.with_gt == True:
+                # If with_gt is True, it means that it is in test phase, rather than training phase
+                proposal_filtered.gt_classes = proposal.gt_classes[inds]
+            else:
+                # NOTE add part for gt in test
+                idmap_global = self.idmaps['idmap_global']
+                idmap_global_reversed = self.idmaps['idmap_global_reversed']
+                idmap_local = self.idmaps['idmap_novel'] if novel is True else self.idmaps['idmap_base']
+                # NOTE HDA the num_classes_base here should be 60 child classes rather than 42
+                bg_class_id_global = self.num_classes_base+self.num_classes_novel
+                bg_class_id_local = self.num_classes_novel if novel is True else self.num_classes_base
+                other_class_ids_global = self.idmaps['base_class_ids_global'] if novel is True else self.idmaps['novel_class_ids_global']
+                other_class_ids_global = list(other_class_ids_global) + [bg_class_id_global]
+
+                gt_classes_filtered = proposal.gt_classes[inds]
+                gt_classes_mapped = torch.zeros(gt_classes_filtered.shape).to(self.device)
+                for i, gt_class in enumerate(gt_classes_filtered.cpu().numpy()):
+                    gt_classes_mapped[i] = bg_class_id_local if gt_class in other_class_ids_global else idmap_local[idmap_global_reversed[gt_class]]
+            
+                proposal_filtered.gt_classes = gt_classes_mapped.long()
+
+        return proposal_filtered
+
+    # TODO LVIS compile this function with batch SCG
+    def extract_features(self, images, features, proposals, targets=None, extract_gt_box_features = False):
+        """
+        Extract features from the input data
+        """
+        del images
+        assert self.training, "Model was changed to eval mode!"
+        proposals = self.label_and_sample_proposals(proposals, targets)
+        # del targets
+
+        features_list = [features[f] for f in self.in_features]
+        proposals_novel, box_features_novel = self._extract_features_box(features_list, proposals)
+        if not extract_gt_box_features:
+            del targets
+            return proposals_novel, box_features_novel
+        else:
+            gt_box_features, gt_classes = self._extract_gt_features_box(features_list, targets)
+            del targets
+            return proposals_novel, box_features_novel, gt_box_features, gt_classes
+
+    def _extract_features_box(self, features, proposals):
+        """
+        Forward logic of the box prediction branch for extracting features.
+
+        Args:
+            features (list[Tensor]): #level input features for box prediction
+            proposals (list[Instances]): the per-image object proposals with
+                their matching ground truth.
+                Each has fields "proposal_boxes", and "objectness_logits",
+                "gt_classes", "gt_boxes".
+
+        Returns:
+            In training, extracted features (list[Tensor]).
+        """
+        # TODO replace proposals with targets and x.gt_boxes, one x corresponds to one img, also store gt.classes
+        assert self.training, "Model was changed to eval mode!"
+        box_features = self.box_pooler(
+            features, [x.proposal_boxes for x in proposals]
+        )
+        box_features = self.box_head(box_features)
+        
+        # if self.lvis:
+        #     # NOTE for LVIS, the model will be trained directly on novel dataset
+        #     proposals_novel = proposals
+        #     box_features_novel = box_features
+        # else:
+        pred_class_logits_base, pred_proposal_deltas_base = self.box_predictor_base(box_features)
+        pred_instances_base, bg_inds, proposals_novel = self.detection_filter(proposals, pred_class_logits_base, pred_proposal_deltas_base)
+
         box_features_novel = box_features[bg_inds] if bg_inds.shape[0] != 0 else torch.tensor([]).to(self.device)
 
         return proposals_novel, box_features_novel
@@ -1059,7 +2105,7 @@ class TwoStageROIHeads(ROIHeads):
         
         return gt_box_features, gt_classes
 
-    def losses_from_features(self, box_features, proposals, weights = None):
+    def losses_from_features(self, box_features, proposals, weights = None, super_cat:str = None):
         """
         Forward logic of the box prediction branch for computing losses.
 
@@ -1074,44 +2120,13 @@ class TwoStageROIHeads(ROIHeads):
             In training, a dict of losses.
         """
         assert self.training, "Model was changed to eval mode!"
-        # pred_class_logits_base, pred_proposal_deltas_base = self.box_predictor_base(
-        #     box_features
-        # )
-        
-        # # Get the box features of background
-        # pred_classes = pred_class_logits_base.argmax(dim=1)
-        # bg_class_id = pred_class_logits_base.shape[1]-1
-        # fg_inds = torch.arange(len(pred_classes))[pred_classes!=bg_class_id]
-        # bg_inds = torch.arange(len(pred_classes))[pred_classes==bg_class_id]
-        
-        # pred_class_logits_novel, pred_proposal_deltas_novel = self.box_predictor_novel(
-        #     box_features[bg_inds], weights
-        # )
-        # del box_features
-        # pred_class_logits, pred_proposal_deltas = self.merge_predictions(fg_inds, bg_inds, pred_class_logits_base, pred_proposal_deltas_base, 
-        #                                                                  pred_class_logits_novel, pred_proposal_deltas_novel)
-        
-        # outputs = FastRCNNOutputs(
-        #     self.box2box_transform,
-        #     pred_class_logits,
-        #     pred_proposal_deltas,
-        #     proposals,
-        #     self.smooth_l1_beta,
-        # )
-        # # print('logits')
-        # # embed()
-        # return outputs.losses()
-        
-        # TODO for training, the following code only has to be done once, as both the box_features and box_predictor_base are fixed
-        # pred_class_logits_base, pred_proposal_deltas_base = self.box_predictor_base(box_features)
-        # fg_inds, bg_inds, proposals_base, proposals_novel = self.detection_filter(proposals, pred_class_logits_base, pred_proposal_deltas_base)
-        # pred_class_logits_base, pred_proposal_deltas_base = pred_class_logits_base[fg_inds], pred_proposal_deltas_base[fg_inds]
        
         pred_class_logits_novel, pred_proposal_deltas_novel = self.box_predictor(
             box_features, weights
         )
         del box_features
-        
+        # print('loss')
+        # embed()
         outputs_novel = FastRCNNOutputs(
             self.box2box_transform,
             pred_class_logits_novel,
@@ -1120,9 +2135,5 @@ class TwoStageROIHeads(ROIHeads):
             self.smooth_l1_beta,
         )
 
-        loss_weight = None
-        # loss_weight = torch.ones(pred_class_logits_novel.shape[1]).to(self.device)
-        # loss_weight[-1] = 0.1
-
-        return outputs_novel.losses(loss_weight=loss_weight)
+        return outputs_novel.losses()
 

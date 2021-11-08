@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from IPython import embed
 from pytracking.libs.tensorlist import TensorList
 
-# NOTE currently the weight predictor module is only designed for CosineOutputLayers
+# NOTE WeightPredictor predicts the novel weights with FastRCNNOutputLayers
 class WeightPredictor(nn.Module):
     def __init__(self, feat_size, box_dim=4):
         super(WeightPredictor, self).__init__()
@@ -76,6 +76,7 @@ class WeightPredictor(nn.Module):
         x = x.view(-1)
         return x
 
+# NOTE simplified predictor
 class WeightPredictor2(nn.Module):
     def __init__(self, feat_size, box_dim=4):
         super(WeightPredictor2, self).__init__()
@@ -90,6 +91,7 @@ class WeightPredictor2(nn.Module):
     def forward(self, x):
         return TensorList([self.cls_score_weight, self.cls_score_bias, self.bbox_pred_weight, self.bbox_pred_bias])
 
+# NOTE WeightPredictor3 predicts weights for TFA task with CosineOutputLayers
 class WeightPredictor3(nn.Module):
     def __init__(self, feat_size, box_dim=4):
         super(WeightPredictor3, self).__init__()

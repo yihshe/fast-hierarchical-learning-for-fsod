@@ -12,8 +12,8 @@ MODEL:
     # for two stage, modify the roi heads name here
     # NAME: "TwoStageROIHeads"
     NUM_CLASSES: 80
-    NUM_CLASSES_BASE: 60
-    NUM_CLASSES_NOVEL: 20
+    # NUM_CLASSES_BASE: 60
+    # NUM_CLASSES_NOVEL: 20
     OUTPUT_LAYER: "CosineSimOutputLayers"
     # OUTPUT_LAYER: "FastRCNNOutputLayers"
     FREEZE_FEAT: True
@@ -26,37 +26,38 @@ MODEL:
   #add
   PRETRAINED_BASE_MODEL: "checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_base/model_final.pth"
 DATASETS:
-  TRAIN: ('coco_trainval_all_1shot',)
+  TRAIN: ('coco_trainval_all_10shot',)
   TEST: ('coco_test_all',)
 SOLVER:
-  IMS_PER_BATCH: 16
+  IMS_PER_BATCH: 10
+  NUM_BATCHES_PER_SET: 2
   # add
-  IMS_PER_BATCH_FEAT_EXTRACT: 10
+  # IMS_PER_BATCH_FEAT_EXTRACT: 10
   # BASE_LR: 0.001
   BASE_LR: 0.01
   STEPS: (14400,)
   # MAX_ITER: 16000
   # CHECKPOINT_PERIOD: 1000
-  MAX_ITER: 4000
+  MAX_ITER: 100
   CHECKPOINT_PERIOD: 10
-  WARMUP_ITERS: 10
+  WARMUP_ITERS: 0
 # add
-DATALOADER:
-  ASPECT_RATIO_GROUPING: False
+# DATALOADER:
+#   ASPECT_RATIO_GROUPING: False
 # add
 CG_PARAMS:
-  NUM_NEWTON_ITER: 40
+  NUM_NEWTON_ITER: 1
   NUM_CG_ITER: 2
   # INIT_HESSIAN_REG: 0.4
   # HESSIAN_REG_FACTOR: 0.9
   # AUGMENTATION: True
-  REGULARIZATION_TYPE: 'feature wise'
-  LOSS_VEC_REG_PATH: 'checkpoints_temp/CG_L2_meta_weight_retrained/coco_meta_weight_regvec_std1e-1_iter1000_lr1e-2/faster_rcnn_R_101_FPN_ft_all_1shot/lambda_params_iter999.pt'
-  PRED_INIT_WEIGHT: True
-  WEIGHT_PREDICTOR_PATH: 'checkpoints_temp/CG_L2_meta_weight_retrained/coco_meta_weight_iter1000_lr1e-2/faster_rcnn_R_101_FPN_ft_all_1shot/weight_predictor_iter999.pt'
+  # REGULARIZATION_TYPE: 'feature wise'
+  # LOSS_VEC_REG_PATH: 'checkpoints_temp/CG_L2_meta_weight_retrained/coco_meta_weight_regvec_std1e-1_iter1000_lr1e-2/faster_rcnn_R_101_FPN_ft_all_1shot/lambda_params_iter999.pt'
+  # PRED_INIT_WEIGHT: True
+  # WEIGHT_PREDICTOR_PATH: 'checkpoints_temp/CG_L2_meta_weight_retrained/coco_meta_weight_iter1000_lr1e-2/faster_rcnn_R_101_FPN_ft_all_1shot/weight_predictor_iter999.pt'
   # FEATURE_PROJECTOR_PATH: 'checkpoints_temp/CG_L2_meta_weight_retrained/coco_meta_feature_iter1000_lr1e-2/faster_rcnn_R_101_FPN_ft_all_1shot/feature_projector_iter999.pt'
 
-OUTPUT_DIR: "checkpoints_temp/CG_L2_RTS/coco/cg2_shot1_rts_iter40_hessian_aug5shot_test/faster_rcnn/faster_rcnn_R_101_FPN_ft_all_1shot"
+OUTPUT_DIR: "checkpoints_temp/CG_L2_RTS/coco/cg2_shot1_rts_iter40_hessian_aug5shot_test/faster_rcnn/faster_rcnn_R_101_FPN_ft_all_1shot_SCG_test"
 
 # OUTPUT_DIR: "checkpoints_temp/CG_L2_test/coco/cg2_shot1_iter200_randinit_testnorm/faster_rcnn/faster_rcnn_R_101_FPN_ft_all_1shot"
 # OUTPUT_DIR: "checkpoints_temp/CG_L2_weight_retrained/coco/meta_weight_regvec_std1e-1_lr1e-2_newton5_aug/faster_rcnn/faster_rcnn_R_101_FPN_ft_all_1shot"

@@ -34,6 +34,7 @@ def parse_args():
     parser.add_argument('--split', '-s', type=int, default=1, help='Data split')
     # COCO arguments
     parser.add_argument('--coco', action='store_true', help='Use COCO dataset')
+    parser.add_argument('--eval-saved-results', action = 'store_true', help = 'Evaluate saved results in the new setting')
 
     args = parser.parse_args()
     return args
@@ -54,28 +55,34 @@ def run_cmd(cmd):
         print(line)
 
 
-def run_exp(cfg, configs):
+def run_exp(cfg, configs, eval_saved_results = False):
     """
     Run training and evaluation scripts based on given config files.
     """
-    # Train
-    output_dir = configs['OUTPUT_DIR']
-    model_path = os.path.join(args.root, output_dir, 'model_final.pth')
-    if not os.path.exists(model_path):
-        train_cmd = 'python -m tools.train_net_modified --dist-url auto --num-gpus {} ' \
-                    '--config-file {} --resume'.format(args.num_gpus, cfg)
-        run_cmd(train_cmd)
-
-    if not args.novel_finetune:
-        # Test
-        res_path = os.path.join(args.root, output_dir, 'inference',
-                                'res_final.json')
-        if not os.path.exists(res_path):
-            test_cmd = 'python -m tools.test_net --dist-url auto --num-gpus {} ' \
-                    '--config-file {} --resume --eval-only'.format(args.num_gpus,
-                                                                    cfg)
-            run_cmd(test_cmd)
-
+    if eval_saved_results is False:
+        # Train
+        output_dir = configs['OUTPUT_DIR']
+        model_path = os.path.join(args.root, output_dir, 'model_final.pth')
+        if not os.path.exists(model_path):
+            train_cmd = 'python -m tools.train_net_modified --dist-url auto --num-gpus {} ' \
+                        '--config-file {} --resume'.format(args.num_gpus, cfg)
+            run_cmd(train_cmd)
+        if not args.novel_finetune:
+            # Test
+            res_path = os.path.join(args.root, output_dir, 'inference',
+                                    'res_final.json')
+            if not os.path.exists(res_path):
+                test_cmd = 'python -m tools.test_net --dist-url auto --num-gpus {} ' \
+                        '--config-file {} --resume --eval-only'.format(args.num_gpus,
+                                                                        cfg)
+                run_cmd(test_cmd)
+    else:
+        results_path = os.path.join(args.root, configs['OUTPUT_DIR'], "inference", "coco_instances_results.json")
+        assert os.path.exists(results_path)
+        test_cmd = 'python -m tools.test_net --dist-url auto --num-gpus {} ' \
+                    '--config-file {} --results-path {} --resume --eval-only'.format(args.num_gpus,
+                                                                    cfg, results_path)
+        run_cmd(test_cmd)
 
 def get_config(seed, shot):
     """
@@ -121,10 +128,10 @@ def get_config(seed, shot):
         temp_mode = mode
 
         # NOTE to be modified the path of config and the path for output
-        config_dir = 'configs/COCO-detection_{}_SGD'.format(model)
-        ckpt_dir = 'checkpoints_{}_SGD/coco/faster_rcnn'.format(model)
+        config_dir = 'configs/thesis/COCO-detection_{}_SGD_new_setting'.format(model)
+        ckpt_dir = 'checkpoints/thesis/checkpoints_{}_SGD_new_setting/coco/faster_rcnn'.format(model)
         # TODO the path needs to be checked for seed 0
-        base_cfg = '../../Base-RCNN-FPN.yaml' if seed!=0 else '../Base-RCNN-FPN.yaml'
+        base_cfg = '../../../Base-RCNN-FPN.yaml' if seed!=0 else '../../Base-RCNN-FPN.yaml'
     else:
         # PASCAL VOC
         assert not args.two_stage, 'Only supports random weights for PASCAL now'
@@ -184,28 +191,29 @@ def get_config(seed, shot):
     configs['_BASE_'] = base_cfg
     configs['DATASETS']['TRAIN'] = make_tuple(configs['DATASETS']['TRAIN'])
     configs['DATASETS']['TEST'] = make_tuple(configs['DATASETS']['TEST'])
-    if args.coco and not args.novel_finetune:
-        # NOTE used for tfa cg (novel weights are different for different seed, but with same base weihgts)
-        ckpt_path = os.path.join(output_dir, prefix, 'model_reset_combine.pth')
-        # NOTE create the combined model if it doest not exist for the tfa coco (with cg)
-        # for HDA, the model should be randomly initialized without the combination below
-        if not os.path.exists(ckpt_path):
-            src2 = os.path.join(
-                output_dir, 'faster_rcnn_R_101_FPN_ft_novel_{}shot{}'.format(
-                    shot, args.suffix),
-                'model_final.pth',
-            )
-            if not os.path.exists(src2):
-                print('Novel weights do not exist. Please run with the ' + \
-                      '--novel-finetune flag first.')
-                assert False
-            combine_cmd = 'python -m tools.ckpt_surgery --coco --method ' + \
-                'combine --src1 checkpoints/coco/faster_rcnn/faster_rcnn' + \
-                '_R_101_FPN_base/model_final.pth --src2 {}'.format(src2) + \
-                ' --save-dir {}'.format(os.path.join(output_dir, prefix))
-            run_cmd(combine_cmd)
-            assert os.path.exists(ckpt_path)
-        configs['MODEL']['WEIGHTS'] = ckpt_path
+    
+    # if args.coco and not args.novel_finetune:
+    #     # NOTE used for tfa cg (novel weights are different for different seed, but with same base weihgts)
+    #     ckpt_path = os.path.join(output_dir, prefix, 'model_reset_combine.pth')
+    #     # NOTE create the combined model if it doest not exist for the tfa coco (with cg)
+    #     # for HDA, the model should be randomly initialized without the combination below
+    #     if not os.path.exists(ckpt_path):
+    #         src2 = os.path.join(
+    #             output_dir, 'faster_rcnn_R_101_FPN_ft_novel_{}shot{}'.format(
+    #                 shot, args.suffix),
+    #             'model_final.pth',
+    #         )
+    #         if not os.path.exists(src2):
+    #             print('Novel weights do not exist. Please run with the ' + \
+    #                   '--novel-finetune flag first.')
+    #             assert False
+    #         combine_cmd = 'python -m tools.ckpt_surgery --coco --method ' + \
+    #             'combine --src1 checkpoints/coco/faster_rcnn/faster_rcnn' + \
+    #             '_R_101_FPN_base/model_final.pth --src2 {}'.format(src2) + \
+    #             ' --save-dir {}'.format(os.path.join(output_dir, prefix))
+    #         run_cmd(combine_cmd)
+    #         assert os.path.exists(ckpt_path)
+    #     configs['MODEL']['WEIGHTS'] = ckpt_path
 
     # elif not args.coco:
     if not args.coco:
@@ -251,7 +259,7 @@ def main(args):
         for seed in range(args.seeds[0], args.seeds[1]):
             print('Split: {}, Seed: {}, Shot: {}'.format(args.split, seed, shot))
             cfg, configs = get_config(seed, shot)
-            run_exp(cfg, configs)
+            run_exp(cfg, configs, eval_saved_results = args.eval_saved_results)
 
 
 if __name__ == '__main__':

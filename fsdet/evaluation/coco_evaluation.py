@@ -67,6 +67,7 @@ class COCOEvaluator(DatasetEvaluator):
             if "base" in dataset_name:
                 self._base_classes = list(hda_meta_info.base_model_cats_id2name.keys())
             else:
+                # TODO for hda all, change the base classes, animal, food and novel classes
                 self._base_classes = list([hda_meta_info.child_cats_name2id[child_cat] for child_cat in hda_meta_info.base_child_cats])
         else:
             self._base_classes = [
@@ -152,6 +153,10 @@ class COCOEvaluator(DatasetEvaluator):
             }
             for result in self._coco_results:
                 result["category_id"] = reverse_id_mapping[result["category_id"]]
+                
+                # TODO NOTE the background id also needs to be mapped to a number, but cannot use the idmap here
+                # if "category_id_gt" in result.keys():
+                #     result["category_id_gt"] = reverse_id_mapping[result["category_id_gt"]]
 
         if self._output_dir:
             file_path = os.path.join(self._output_dir, "coco_instances_results.json")
@@ -279,6 +284,105 @@ class COCOEvaluator(DatasetEvaluator):
         results.update({"AP-" + name: ap for name, ap in results_per_category})
         return results
 
+    def evaluate_with_saved_results(self, results_path):
+        self._results = OrderedDict()
+        self._eval_predictions_with_saved_results(results_path)
+        # Copy so the caller can do whatever with results
+        return copy.deepcopy(self._results)
+
+    def _eval_predictions_with_saved_results(self, results_path):
+        self._coco_results = json.load(open(results_path))
+        if not self._do_evaluation:
+            self._logger.info("Annotations are not available for evaluation.")
+            return
+
+        self._logger.info("Evaluating predictions ...")
+        if self._is_splits:
+            assert "hda" in self._dataset_name, "The evaluation now only support the HDA novel setting!"
+            self._results["bbox"] = {}
+            class_info = dict({})
+            hda_meta_info = HDAMetaInfo()
+            class_info = {
+                'all': {
+                    'ids': [hda_meta_info.child_cats_name2id[name] for name in hda_meta_info.child_cats],
+                    'names': [name for name in hda_meta_info.child_cats] 
+                },
+                'base': {
+                    'ids': [hda_meta_info.child_cats_name2id[name] for name in hda_meta_info.base_other_child_cats],
+                    'names': [name for name in hda_meta_info.base_other_child_cats]
+                },
+                'animal': {
+                    'ids': [hda_meta_info.child_cats_name2id[name] for name in hda_meta_info.base_animal_child_cats],
+                    'names': [name for name in hda_meta_info.base_animal_child_cats]
+                },
+                'food': {
+                    'ids': [hda_meta_info.child_cats_name2id[name] for name in hda_meta_info.base_food_child_cats],
+                    'names': [name for name in hda_meta_info.base_food_child_cats]
+                },
+                'novel': {
+                    'ids': [hda_meta_info.child_cats_name2id[name] for name in hda_meta_info.novel_child_cats],
+                    'names': [name for name in hda_meta_info.novel_child_cats] 
+                }
+            }
+        
+            # TODO classes cat id and corrsponding cat names if it is new split
+            for split, classes, names in [
+                    ("all", None, class_info['all']['names']),
+                    ("base", class_info['base']['ids'], class_info['base']['names']),
+                    ("animal", class_info['animal']['ids'], class_info['animal']['names']),
+                    ("food", class_info['food']['ids'], class_info['food']['names']),
+                    ("novel", class_info['novel']['ids'], class_info['novel']['names'])]:
+                if "all" not in self._dataset_name and \
+                        split not in self._dataset_name:
+                    continue
+                coco_eval = (
+                    _evaluate_predictions_on_coco(
+                        self._coco_api, self._coco_results, "bbox", classes,
+                    )
+                    if len(self._coco_results) > 0
+                    else None  # cocoapi does not handle empty results very well
+                )
+                res_ = self._derive_coco_results(
+                    coco_eval, "bbox", class_names=names,
+                )
+                res = {}
+                for metric in res_.keys():
+                    if len(metric) <= 4:
+                        if split == "all":
+                            res[metric] = res_[metric]
+                        elif split == "base":
+                            res["b"+metric] = res_[metric]
+                        elif split == "animal":
+                            res["a"+metric] = res_[metric]
+                        elif split == "food":
+                            res["f"+metric] = res_[metric]
+                        elif split == "novel":
+                            res["n"+metric] = res_[metric]
+                self._results["bbox"].update(res)
+
+            # add "AP" if not already in
+            if "AP" not in self._results["bbox"]:
+                if "nAP" in self._results["bbox"]:
+                    self._results["bbox"]["AP"] = self._results["bbox"]["nAP"]
+                elif "aAP" in self._results["bbox"]:
+                    self._results["bbox"]["AP"] = self._results["bbox"]["aAP"]
+                elif "fAP" in self._results["bbox"]:
+                    self._results["bbox"]["AP"] = self._results["bbox"]["fAP"]
+                else:
+                    self._results["bbox"]["AP"] = self._results["bbox"]["bAP"]
+        else:
+            coco_eval = (
+                _evaluate_predictions_on_coco(
+                    self._coco_api, self._coco_results, "bbox",
+                )
+                if len(self._coco_results) > 0
+                else None  # cocoapi does not handle empty results very well
+            )
+            res = self._derive_coco_results(
+                coco_eval, "bbox",
+                class_names=self._metadata.get("thing_classes")
+            )
+            self._results["bbox"] = res
 
 def instances_to_coco_json(instances, img_id):
     """
@@ -300,6 +404,11 @@ def instances_to_coco_json(instances, img_id):
     boxes = boxes.tolist()
     scores = instances.scores.tolist()
     classes = instances.pred_classes.tolist()
+    
+    # NOTE experiment: for calculating the confusion matrix of the test set
+    gt_classes = None
+    if instances.has('gt_classes'):
+        gt_classes = instances.gt_classes.tolist()
 
     results = []
     for k in range(num_instance):
@@ -309,6 +418,8 @@ def instances_to_coco_json(instances, img_id):
             "bbox": boxes[k],
             "score": scores[k],
         }
+        if gt_classes is not None:
+            result["category_id_gt"] = gt_classes[k]
         results.append(result)
     return results
 

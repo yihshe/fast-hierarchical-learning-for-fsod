@@ -111,10 +111,16 @@ class LVISEvaluator(DatasetEvaluator):
             }
             for result in self._lvis_results:
                 result["category_id"] = reverse_id_mapping[result["category_id"]] + 1
+
+                # if "category_id_gt" in result.keys():
+                #     result["category_id_gt"] = reverse_id_mapping[result["category_id_gt"]] + 1
         else:
             # from 0-indexed to 1-indexed
             for result in self._lvis_results:
                 result["category_id"] += 1
+                
+                if "category_id_gt" in result.keys():
+                    result["category_id_gt"] += 1
 
         if self._output_dir:
             file_path = os.path.join(

@@ -22,14 +22,17 @@ class DetectionLossProblem(MinimizationProblem):
     """
     Compute losses given the model and data
     """
-    def __init__(self, proposals, box_features, regularization:str = None, mask:TensorList = None, base_params:dict = None, reg = None, augmentation:bool = False, bg_class_id = None):
+    def __init__(self, proposals, box_features, regularization:str = None, mask:TensorList = None, base_params:dict = None, reg = None, augmentation:bool = False, bg_class_id = None, super_cat:str=None, pseudo_shots = None, noise_level = None, drop_rate = None):
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.augmentation = augmentation
         # TODO this augmentation is now only for HDA, not TFA given the filtering of fg abd bg
         if self.augmentation:
-            self.fg_proposals, self.fg_box_features, self.bg_proposals, self.bg_box_features = self.fg_proposals_filter(proposals, box_features, bg_class_id=bg_class_id)
-            del proposals, box_features
-            torch.cuda.empty_cache()
+            if super_cat == None or super_cat == "bg":
+                self.fg_proposals, self.fg_box_features, self.bg_proposals, self.bg_box_features = self.fg_proposals_filter(proposals, box_features, bg_class_id=bg_class_id)
+                del proposals, box_features
+                torch.cuda.empty_cache()
+            elif super_cat == 'animal' or super_cat == 'food':
+                self.proposals, self.box_features = proposals, box_features
         else:
             self.proposals, self.box_features = proposals, box_features
             
@@ -44,25 +47,23 @@ class DetectionLossProblem(MinimizationProblem):
         self.param_names = ['roi_heads.box_predictor.cls_score.weight', 
                             'roi_heads.box_predictor.bbox_pred.weight',
                             'roi_heads.box_predictor.bbox_pred.bias']
-        
+        self.super_cat = super_cat
+        self.pseudo_shots = pseudo_shots
+        self.noise_level = noise_level
+        self.drop_rate = drop_rate
 
     def __call__(self, model: GeneralizedRCNN, weights: TensorList = None) -> TensorList:
         if self.augmentation:
-            # TODO for running aggregation, test whether this still works for TFA (augment fg only)
-            # Or if it with meta learned weights and lambda, then do not apply augmentation.
-            fg_proposals, fg_box_features = self.feature_augmentation(self.fg_proposals, self.fg_box_features, pseudo_shots=5)
-            # bg_proposals, bg_box_features = self.feature_augmentation(self.bg_proposals, self.bg_box_features, pseudo_shots=5)
-            # sampled_bg_proposals, sampled_bg_box_features = self.bg_proposal_sampler(self.bg_proposals, self.bg_box_features, samples_num=150000)
-            proposals = [*self.bg_proposals, *fg_proposals]
-            box_features = torch.cat((self.bg_box_features, fg_box_features), dim=0)
-
-            # proposals, box_features = self.feature_augmentation(self.proposals, self.box_features)
-            # print('aug')
-            # embed()
+            if self.super_cat == None or self.super_cat == "bg":
+                fg_proposals, fg_box_features = self.feature_augmentation(self.fg_proposals, self.fg_box_features, pseudo_shots=self.pseudo_shots, noise_level=self.noise_level, drop_rate=self.drop_rate)
+                proposals = [*self.bg_proposals, *fg_proposals]
+                box_features = torch.cat((self.bg_box_features, fg_box_features), dim=0)
+            elif self.super_cat == 'animal' or self.super_cat == 'food':
+              proposals, box_features = self.feature_augmentation(self.proposals, self.box_features, pseudo_shots=self.pseudo_shots, noise_level=self.noise_level, drop_rate=self.drop_rate)
         else:
             proposals, box_features = self.proposals, self.box_features
 
-        self.loss_dict = model.losses_from_features(box_features, proposals, weights)
+        self.loss_dict = model.losses_from_features(box_features, proposals, weights, super_cat = self.super_cat)
 
         if self.regularization is not None:
             assert self.regularization in ['scalar', 'feature wise'], "Type of regularization is incorrect!"
@@ -160,13 +161,10 @@ class DetectionLossProblem(MinimizationProblem):
 
             
 
-
-        
-
 class DetectionNewtonCG(ConjugateGradientBase):
     """Newton with Conjugate Gradient. Handels minimization problems in detection."""
     def __init__(self, problem: DetectionLossProblem, model: GeneralizedRCNN,
-                 novel_init_weights=None, IDMAP = None, NOVEL_CLASSES = None, 
+                 novel_init_weights=None, IDMAP = None, NOVEL_CLASSES = None, super_cat: str = None,
                  init_hessian_reg = 0.0, hessian_reg_factor = 1.0, cg_eps = 0.0, fletcher_reeves = True, standard_alpha = True, direction_forget_factor = 0,
                  debug = False, analyze = False, plotting = False, fig_num=(10, 11, 12)):
         super().__init__(fletcher_reeves, standard_alpha, direction_forget_factor, debug or analyze or plotting)
@@ -177,16 +175,29 @@ class DetectionNewtonCG(ConjugateGradientBase):
             self.overwrite_novel_weights(model, novel_init_weights, IDMAP, NOVEL_CLASSES)
         
         self.model = model
-        self.model_eval = copy.deepcopy(model)
-        # NOTE two stage test
-        self.state_dict = self.model.roi_heads.box_predictor.state_dict()
-        # self.state_dict = self.model.roi_heads.box_predictor_novel.state_dict()
+        # NOTE currently model_eval is not available for hierarchical detection setting, as we are optimizing three modules at same time
+        self.model_eval = copy.deepcopy(model) if debug is True else None
+        
+        if super_cat == 'bg':
+            module = self.model.roi_heads.box_predictor_bg
+        elif super_cat == 'animal':
+            module = self.model.roi_heads.box_predictor_animal
+        elif super_cat == 'food':
+            module = self.model.roi_heads.box_predictor_food
+        else:
+            module = self.model.roi_heads.box_predictor
+        self.super_cat = super_cat
+        self.module = module
 
+        # self.state_dict = self.model.roi_heads.box_predictor.state_dict()
+        self.state_dict = self.module.state_dict()
+        
         self.layer_names = list(self.state_dict.keys())
         self.x = TensorList([self.state_dict[k].detach().clone() for k in self.state_dict.keys()])
-        self.x_eval = TensorList([self.state_dict[k].detach().clone() for k in self.state_dict.keys()])
+        self.x_eval = TensorList([self.state_dict[k].detach().clone() for k in self.state_dict.keys()]) if debug is True else None
         # self.augmentation = augmentation
         
+        self.debug = debug
         self.analyze_convergence = analyze
         self.plotting = plotting
         self.fig_num = fig_num
@@ -205,6 +216,7 @@ class DetectionNewtonCG(ConjugateGradientBase):
         self.losses = torch.zeros(0)
         self.gradient_mags = torch.zeros(0)
     
+    # NOTE this function is used to overwrite the params with the generated weights
     def overwrite_novel_weights(self, model, novel_init_weights, IDMAP, NOVEL_CLASSES):
         state_dict = model.roi_heads.box_predictor.state_dict()
         layer_names = list(state_dict.keys())
@@ -244,13 +256,11 @@ class DetectionNewtonCG(ConjugateGradientBase):
         # embed()
         
  
-
     def clear_temp(self):
         self.f0 = None
         self.g = None
 
     def run(self, num_cg_iter, num_newton_iter=None):
-
         if isinstance(num_cg_iter, int):
             if num_cg_iter == 0:
                 return
@@ -324,8 +334,8 @@ class DetectionNewtonCG(ConjugateGradientBase):
         
         # Gradient of loss
         # NOTE two stage test
-        self.g = TensorList(torch.autograd.grad(self.f0, self.model.roi_heads.box_predictor.parameters(), create_graph=True))
-        # self.g = TensorList(torch.autograd.grad(self.f0, self.model.roi_heads.box_predictor_novel.parameters(), create_graph=True))   
+        # self.g = TensorList(torch.autograd.grad(self.f0, self.model.roi_heads.box_predictor.parameters(), create_graph=True))
+        self.g = TensorList(torch.autograd.grad(self.f0, self.module.parameters(), create_graph=True))   
 
         # Get the right hand side
         self.b = - self.g.detach()
@@ -339,7 +349,7 @@ class DetectionNewtonCG(ConjugateGradientBase):
         self.x += delta_x
         
         self.model_update()
-        print('loss update: {}'.format(loss_dict['loss_cls']), 'step norm: {}'.format([torch.sum(torch.square(delta_x[0])), torch.sum(torch.square(delta_x[1]))]))
+        print('{} loss update: {}'.format(self.super_cat, list(loss_dict.values())[0]), 'step norm: {}'.format([torch.sum(torch.square(delta_x[0])), torch.sum(torch.square(delta_x[1]))]))
         # embed()
         
         if self.debug:
@@ -360,8 +370,8 @@ class DetectionNewtonCG(ConjugateGradientBase):
 
     def A(self, x):
         # NOTE ts test
-        return TensorList(torch.autograd.grad(self.g, self.model.roi_heads.box_predictor.parameters(), x, retain_graph=True)) + self.hessian_reg * x
-        # return TensorList(torch.autograd.grad(self.g, self.model.roi_heads.box_predictor_novel.parameters(), x, retain_graph=True)) + self.hessian_reg * x
+        # return TensorList(torch.autograd.grad(self.g, self.model.roi_heads.box_predictor.parameters(), x, retain_graph=True)) + self.hessian_reg * x
+        return TensorList(torch.autograd.grad(self.g, self.module.parameters(), x, retain_graph=True)) + self.hessian_reg * x
 
     def ip(self, a, b):
         # Implements the inner product
@@ -394,9 +404,9 @@ class DetectionNewtonCG(ConjugateGradientBase):
         else:
             for i in range(len(self.layer_names)):
                 self.state_dict[self.layer_names[i]] = self.x[i].detach()
-            # NOTE ts test
-            self.model.roi_heads.box_predictor.load_state_dict(self.state_dict)  
-            # self.model.roi_heads.box_predictor_novel.load_state_dict(self.state_dict)
+
+            # self.model.roi_heads.box_predictor.load_state_dict(self.state_dict)  
+            self.module.load_state_dict(self.state_dict)
             # print('updated') 
             # embed()        
 

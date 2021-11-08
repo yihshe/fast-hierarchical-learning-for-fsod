@@ -31,7 +31,7 @@ import time
 
 from IPython import embed
 
-from fsdet.optimization import CGTrainer
+from fsdet.optimization import CGTrainer, HDACGTrainer, SCGTrainer
          
 def setup(args):
     """
@@ -49,13 +49,36 @@ def setup(args):
 
 
 def main(args):
+    if args.CGTrainer:
+        Trainer = CGTrainer
+    elif args.HDACGTrainer:
+        Trainer = HDACGTrainer
+    elif args.SCGTrainer:
+        Trainer = SCGTrainer
+
     cfg = setup(args)
     if args.eval_only:
-        model = CGTrainer.build_model(cfg)
+        # model = CGTrainer.build_model(cfg)
+        # if args.CGTrainer:
+        #     model = CGTrainer.build_model(cfg)
+        # elif args.HDACGTrainer:
+        #     model = HDACGTrainer.build_model(cfg)
+        # elif args.SCGTrainer:
+        #     model = SCGTrainer.build_model(cfg)
+
+        model = Trainer.build_model(cfg)
         DetectionCheckpointer(model, save_dir=cfg.OUTPUT_DIR).resume_or_load(
             cfg.MODEL.WEIGHTS, resume=args.resume
         )
-        res = CGTrainer.test(cfg, model)
+
+        # res = CGTrainer.test(cfg, model)
+        # if args.CGTrainer:
+        #     res = CGTrainer.test(cfg, model)
+        # elif args.HDACGTrainer:
+        #     res = HDACGTrainer.test(cfg, model)
+        # elif args.SCGTrainer:
+        #     res = SCGTrainer.test(cfg, model)
+        res = Trainer.test(cfg, model)
         if comm.is_main_process():
             verify_results(cfg, res)
         return res
@@ -64,13 +87,31 @@ def main(args):
     If you'd like to do anything fancier than the standard training logic,
     consider writing your own training loop or subclassing the trainer.
     """
-    trainer = CGTrainer(cfg)
+    # if args.CGTrainer:
+    #     trainer = CGTrainer(cfg)
+    # elif args.HDACGTrainer:
+    #     trainer = HDACGTrainer(cfg)
+    # elif args.SCGTrainer:
+    #     trainer = SCGTrainer(cfg)
+        
+    trainer = Trainer(cfg)
     trainer.resume_or_load(resume=args.resume)
     return trainer.train()
 
 
 if __name__ == "__main__":
-    args = default_argument_parser().parse_args()
+    # args = default_argument_parser().parse_args()
+    parser = default_argument_parser()
+    parser.add_argument(
+        "--CGTrainer", action="store_true", help="trainer to use",
+    )
+    parser.add_argument(
+        "--HDACGTrainer", action="store_true", help="trainer to use",
+    )
+    parser.add_argument(
+        "--SCGTrainer", action="store_true", help="trainer to use",
+    )   
+    args = parser.parse_args()
     print("Command Line Args:", args)
     launch(
         main,

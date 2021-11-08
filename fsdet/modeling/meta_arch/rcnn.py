@@ -67,12 +67,13 @@ class GeneralizedRCNN(nn.Module):
             print("froze roi_box_head parameters")
             
         # NOTE freeze the base predictor if using the TwoStageROIHead
-        if cfg.MODEL.ROI_HEADS.NAME == "TwoStageROIHeads":
+        # TODO HDA the params should also be frozen in new HDA head
+        if cfg.MODEL.ROI_HEADS.NAME == "TwoStageROIHeads" or cfg.MODEL.ROI_HEADS.NAME == "HDAROIHeads" or cfg.MODEL.ROI_HEADS.NAME == "TwoStageROIHeads_lvis_rc":
             for p in self.roi_heads.box_predictor_base.parameters():
                 p.requires_grad = False
             print("froze roi_box_predictor_base parameters")
 
-    def forward(self, batched_inputs):
+    def forward(self, batched_inputs, with_gt = False):
         """
         Args:
             batched_inputs: a list, batched outputs of :class:`DatasetMapper` .
@@ -96,7 +97,7 @@ class GeneralizedRCNN(nn.Module):
                     "pred_boxes", "pred_classes", "scores"
         """
         if not self.training:
-            return self.inference(batched_inputs)
+            return self.inference(batched_inputs, with_gt = with_gt)
     
         images = self.preprocess_image(batched_inputs)
         if "instances" in batched_inputs[0]:
@@ -141,7 +142,7 @@ class GeneralizedRCNN(nn.Module):
         return losses
 
     def inference(
-        self, batched_inputs, detected_instances=None, do_postprocess=True
+        self, batched_inputs, detected_instances=None, do_postprocess=True, with_gt = False,
     ):
         """
         Run inference on the given inputs.
@@ -163,6 +164,12 @@ class GeneralizedRCNN(nn.Module):
 
         images = self.preprocess_image(batched_inputs)
         features = self.backbone(images.tensor)
+        gt_instances = None
+        if with_gt is True:
+            if "instances" in batched_inputs[0]:
+                gt_instances = [
+                    x["instances"].to(self.device) for x in batched_inputs
+                ]
 
         if detected_instances is None:
             if self.proposal_generator:
@@ -173,7 +180,8 @@ class GeneralizedRCNN(nn.Module):
                     x["proposals"].to(self.device) for x in batched_inputs
                 ]
 
-            results, _ = self.roi_heads(images, features, proposals, None)
+            # results, _ = self.roi_heads(images, features, proposals, None)
+            results, _ = self.roi_heads(images, features, proposals, targets = gt_instances)
         else:
             detected_instances = [
                 x.to(self.device) for x in detected_instances
@@ -227,7 +235,6 @@ class GeneralizedRCNN(nn.Module):
                 Extracted box features for the input data.
         """
         assert self.training, "Model was changed to eval mode!"
-
         images = self.preprocess_image(batched_inputs)
         if "instances" in batched_inputs[0]:
             gt_instances = [
@@ -272,7 +279,7 @@ class GeneralizedRCNN(nn.Module):
         
         # return proposals, box_features
 
-    def losses_from_features(self, box_features, proposals, weights = None):
+    def losses_from_features(self, box_features, proposals, weights = None, super_cat: str = None):
         """
         Forward logic of the box prediction branch for computing losses.
 
@@ -289,7 +296,7 @@ class GeneralizedRCNN(nn.Module):
         
         assert self.training, "Model was changed to eval mode!"
         
-        detector_losses = self.roi_heads.losses_from_features(box_features, proposals, weights)
+        detector_losses = self.roi_heads.losses_from_features(box_features, proposals, weights, super_cat)
         losses = {}
         losses.update(detector_losses)
         return losses

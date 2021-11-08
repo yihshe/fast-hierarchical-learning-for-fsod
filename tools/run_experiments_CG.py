@@ -35,6 +35,11 @@ def parse_args():
     # COCO arguments
     parser.add_argument('--coco', action='store_true', help='Use COCO dataset')
 
+    # temporary argument for augmentation
+    parser.add_argument('--augmentation', action='store_true', help='Feature augmentation')
+    parser.add_argument('--eval-saved-results', action = 'store_true', help = 'Evaluate saved results in the new setting')
+
+
     args = parser.parse_args()
     return args
 
@@ -54,28 +59,36 @@ def run_cmd(cmd):
         print(line)
 
 
-def run_exp(cfg, configs):
+def run_exp(cfg, configs, eval_saved_results = False):
     """
     Run training and evaluation scripts based on given config files.
     """
-    # Train
-    output_dir = configs['OUTPUT_DIR']
-    model_path = os.path.join(args.root, output_dir, 'model_final.pth')
-    if not os.path.exists(model_path):
-        train_cmd = 'python -m tools.tune_net --dist-url auto --num-gpus {} ' \
-                    '--config-file {} --resume'.format(args.num_gpus, cfg)
-        run_cmd(train_cmd)
+    if eval_saved_results is False:
+        # Train
+        output_dir = configs['OUTPUT_DIR']
+        model_path = os.path.join(args.root, output_dir, 'model_final.pth')
+        if not os.path.exists(model_path):
+            train_cmd = 'python -m tools.tune_net_hda_new_setting --dist-url auto --num-gpus {} ' \
+                        '--config-file {} --resume'.format(args.num_gpus, cfg)
+            run_cmd(train_cmd)
 
-    # Test
-    res_path = os.path.join(args.root, output_dir, 'inference',
-                            'res_final.json')
-    if not os.path.exists(res_path):
+        # Test
+        res_path = os.path.join(args.root, output_dir, 'inference',
+                                'res_final.json')
+        if not os.path.exists(res_path):
+            test_cmd = 'python -m tools.test_net --dist-url auto --num-gpus {} ' \
+                    '--config-file {} --resume --eval-only'.format(args.num_gpus,
+                                                                    cfg)
+            run_cmd(test_cmd)
+    else:
+        results_path = os.path.join(args.root, configs['OUTPUT_DIR'], "inference", "coco_instances_results.json")
+        assert os.path.exists(results_path)
         test_cmd = 'python -m tools.test_net --dist-url auto --num-gpus {} ' \
-                   '--config-file {} --resume --eval-only'.format(args.num_gpus,
-                                                                  cfg)
+                    '--config-file {} --results-path {} --resume --eval-only'.format(args.num_gpus,
+                                                                    cfg, results_path)
         run_cmd(test_cmd)
 
-
+                
 def get_config(seed, shot):
     """
     For a given seed and shot, generate a config file based on a template
@@ -118,12 +131,12 @@ def get_config(seed, shot):
 
         # CG iteration, Newton iteration
         ITERS = {
-            1: (2, 30),
-            2: (2, 30),
-            3: (2, 30),
-            5: (2, 30),
-            10: (2, 30),
-            30: (2, 30),
+            1: (2, 50),
+            2: (2, 50),
+            3: (2, 50),
+            5: (2, 50),
+            10: (2, 50),
+            30: (2, 50),
         } if args.HDA else {
             1: (2, 100),
             2: (2, 100),
@@ -136,12 +149,13 @@ def get_config(seed, shot):
         mode = 'all'
         split = temp_split = ''
         temp_mode = mode
+        augmentation = '_augmentation' if args.augmentation else ''
 
         # NOTE to be modified the path of config and the path for output
-        config_dir = 'configs/COCO-detection_{}_CG'.format(model)
-        ckpt_dir = 'checkpoints_{}_CG/coco/faster_rcnn'.format(model)
+        config_dir = 'configs/thesis/COCO-detection_{}_CG_new_setting{}'.format(model, augmentation)
+        ckpt_dir = 'checkpoints/thesis/checkpoints_{}_CG_new_setting{}/coco/faster_rcnn'.format(model, augmentation)
         # TODO the path needs to be checked for seed 0
-        base_cfg = '../../Base-RCNN-FPN.yaml' if seed!=0 else '../Base-RCNN-FPN.yaml'
+        base_cfg = '../../../Base-RCNN-FPN.yaml' if seed!=0 else '../../Base-RCNN-FPN.yaml'
     else:
         # PASCAL VOC
         assert not args.two_stage, 'Only supports random weights for PASCAL now'
@@ -273,7 +287,7 @@ def main(args):
         for seed in range(args.seeds[0], args.seeds[1]):
             print('Split: {}, Seed: {}, Shot: {}'.format(args.split, seed, shot))
             cfg, configs = get_config(seed, shot)
-            run_exp(cfg, configs)
+            run_exp(cfg, configs, eval_saved_results = args.eval_saved_results)
 
 
 if __name__ == '__main__':

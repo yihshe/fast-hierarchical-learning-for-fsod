@@ -23,6 +23,9 @@ class HDAMetaInfo:
         child_cats = [k['name'] for k in cats]
         novel_child_cats = [k['name'] for k in cats if k['supercategory'] in novel_super_cats]
         base_child_cats = [k['name'] for k in cats if k['supercategory'] in base_super_cats]
+        base_animal_child_cats = [k['name'] for k in cats if k['supercategory'] == 'animal']
+        base_food_child_cats = [k['name'] for k in cats if k['supercategory'] == 'food']
+        base_other_child_cats = [k['name'] for k in cats if k['supercategory'] in base_super_cats and k['supercategory'] not in ['animal', 'food']]
         child_cats_id2name = {k['id']:k['name'] for k in cats}
         child_cats_name2id = {v:k for k,v in child_cats_id2name.items()}
         
@@ -57,6 +60,9 @@ class HDAMetaInfo:
         self.child_cats = child_cats
         self.novel_child_cats = novel_child_cats
         self.base_child_cats = base_child_cats
+        self.base_animal_child_cats = base_animal_child_cats
+        self.base_food_child_cats = base_food_child_cats
+        self.base_other_child_cats = base_other_child_cats
         self.child_cats_id2name = child_cats_id2name
         self.child_cats_name2id = child_cats_name2id
 

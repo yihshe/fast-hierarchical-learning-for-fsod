@@ -1,6 +1,7 @@
 _BASE_: "../Base-RCNN-FPN.yaml"
 MODEL:
-  WEIGHTS: "checkpoints/lvis/faster_rcnn/faster_rcnn_R_101_FPN_base_nomask_cosine/model_reset_remove.pth"
+  # WEIGHTS: "checkpoints/lvis/faster_rcnn/faster_rcnn_R_101_FPN_base_nomask_cosine/model_reset_remove.pth"
+  WEIGHTS: "checkpoints/lvis/faster_rcnn/faster_rcnn_R_101_FPN_base_repeat_cos/model_reset_remove.pth"
   MASK_ON: False
   RESNETS:
     DEPTH: 101
@@ -27,6 +28,7 @@ SOLVER:
   BASE_LR: 0.01
   STEPS: (15000,)
   MAX_ITER: 20000
-  CHECKPOINT_PERIOD: 1000
+  # CHECKPOINT_PERIOD: 1000
+  CHECKPOINT_PERIOD: 10000
   WARMUP_ITERS: 0
 OUTPUT_DIR: "checkpoints/lvis/faster_rcnn/faster_rcnn_R_101_FPN_fc_novel_cosine"

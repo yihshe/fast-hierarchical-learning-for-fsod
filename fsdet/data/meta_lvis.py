@@ -3,11 +3,13 @@ from fvcore.common.timer import Timer
 
 import logging
 import os
-from detectron2.config import global_cfg
+# from detectron2.config import global_cfg
+from fsdet.config import global_cfg
 from detectron2.data import DatasetCatalog, MetadataCatalog
 from detectron2.structures import BoxMode
 
 from .lvis_v0_5_categories import LVIS_CATEGORIES_NOVEL_IDS
+from IPython import embed
 
 """
 This file contains functions to parse LVIS-format annotations into dicts in the
@@ -52,6 +54,11 @@ def load_filtered_lvis_json(
         )
 
     if dataset_name is not None and "train" in dataset_name:
+        # if global_cfg.MODEL.ROI_HEADS.NAME == "TwoStageROIHeads":
+        #     assert global_cfg.MODEL.ROI_HEADS.NUM_CLASSES_NOVEL == len(
+        #         metadata["thing_classes"]
+        #     ), "For LVIS, the model should directly be trained on novel dataset! NUM_CLASSES should match number of categories: NOVEL=454"
+        # else:
         assert global_cfg.MODEL.ROI_HEADS.NUM_CLASSES == len(
             metadata["thing_classes"]
         ), "NUM_CLASSES should match number of categories: ALL=1230, NOVEL=454"
@@ -97,6 +104,7 @@ def load_filtered_lvis_json(
             # the image_id we're looking at.
             assert anno["image_id"] == image_id
             obj = {"bbox": anno["bbox"], "bbox_mode": BoxMode.XYWH_ABS}
+            # if global_cfg.MODEL.ROI_HEADS.NUM_CLASSES == 454 or ('train' in global_cfg.DATASETS.TRAIN[0] and global_cfg.MODEL.ROI_HEADS.NAME == "TwoStageROIHeads"):
             if global_cfg.MODEL.ROI_HEADS.NUM_CLASSES == 454:
                 # Novel classes only
                 if anno["category_id"] - 1 not in LVIS_CATEGORIES_NOVEL_IDS:
