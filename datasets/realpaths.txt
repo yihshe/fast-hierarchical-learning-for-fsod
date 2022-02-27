@@ -1,0 +1,22 @@
+# data folders of symbolic links and their real path
+# datasets/coco/
+/srv/beegfs02/scratch/visobt4s/data/tracking_datasets/coco
+
+# datasets/cocosplit/
+/srv/beegfs02/scratch/visobt4s/data/tracking_datasets/FsDet_few_shot_datasets/cocosplit
+
+# datasets/lvis/
+# lvis_v0.5_train_common.json lvis_v0.5_train_freq.json lvis_v0.5_train_rare.json lvis_v0.5_train.json lvis_v0.5_val.json
+
+# datasets/lvissplit/
+/srv/beegfs02/scratch/visobt4s/data/tracking_datasets/FsDet_few_shot_datasets/lvissplit
+
+# datasets/VOC2007/
+/srv/beegfs02/scratch/visobt4s/data/tracking_datasets/voc/VOCdevkit/VOC2007
+
+# datasets/VOC2012/
+/srv/beegfs02/scratch/visobt4s/data/tracking_datasets/voc/VOCdevkit/VOC2012
+
+# datasets/vocsplit/
+/srv/beegfs02/scratch/visobt4s/data/tracking_datasets/FsDet_few_shot_datasets/vocsplit
+
