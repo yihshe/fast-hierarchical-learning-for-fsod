@@ -1,0 +1,38 @@
+CG_PARAMS:
+  LOSS_VEC_REG_PATH: checkpoints_temp/CG_L2_meta_weight_retrained/coco_meta_weight_regvec_std1e-1_iter1000_lr1e-2/faster_rcnn_R_101_FPN_ft_all_1shot/lambda_params_iter999.pt
+  NUM_CG_ITER: 2
+  NUM_NEWTON_ITER: 100
+  PRED_INIT_WEIGHT: true
+  REGULARIZATION_TYPE: feature wise
+  WEIGHT_PREDICTOR_PATH: checkpoints_temp/CG_L2_meta_weight_retrained/coco_meta_weight_regvec_std1e-1_iter1000_lr1e-2/faster_rcnn_R_101_FPN_ft_all_1shot/weight_predictor_iter999.pt
+DATALOADER:
+  ASPECT_RATIO_GROUPING: false
+DATASETS:
+  TEST: !!python/tuple
+  - coco_test_all
+  TRAIN: !!python/tuple
+  - coco_trainval_all_2shot
+MODEL:
+  BACKBONE:
+    FREEZE: true
+  MASK_ON: false
+  PRETRAINED_BASE_MODEL: checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_base/model_final.pth
+  PROPOSAL_GENERATOR:
+    FREEZE: true
+  RESNETS:
+    DEPTH: 101
+  ROI_HEADS:
+    FREEZE_FEAT: true
+    NUM_CLASSES: 80
+    OUTPUT_LAYER: CosineSimOutputLayers
+  WEIGHTS: checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_all/model_reset_surgery.pth
+OUTPUT_DIR: ./checkpoints_TFA_CG/coco/faster_rcnn/faster_rcnn_R_101_FPN_ft_all_2shot
+SOLVER:
+  BASE_LR: 0.001
+  CHECKPOINT_PERIOD: 100
+  IMS_PER_BATCH: 16
+  IMS_PER_BATCH_FEAT_EXTRACT: 10
+  MAX_ITER: 16000
+  STEPS: (14400,)
+  WARMUP_ITERS: 10
+_BASE_: ../Base-RCNN-FPN.yaml

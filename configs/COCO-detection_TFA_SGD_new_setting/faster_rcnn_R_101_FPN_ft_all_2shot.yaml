@@ -1,0 +1,31 @@
+_BASE_: "../Base-RCNN-FPN.yaml"
+MODEL:
+  # TODO change the weight
+  WEIGHTS: "checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_all/model_reset_surgery_new_setting.pth"
+  MASK_ON: False
+  RESNETS:
+    DEPTH: 101
+  ROI_HEADS:
+    NUM_CLASSES: 80
+    OUTPUT_LAYER: "CosineSimOutputLayers"
+    FREEZE_FEAT: True
+  BACKBONE:
+    FREEZE: True
+  PROPOSAL_GENERATOR:
+    FREEZE: True
+DATASETS:
+  TRAIN: ('coco_trainval_hda_all_2shot',)
+  TEST: ('coco_test_hda_all',)
+SOLVER:
+  IMS_PER_BATCH: 16
+  # add
+  IMS_PER_BATCH_FEAT_EXTRACT: 10
+  BASE_LR: 0.001
+  STEPS: (28800,)
+  MAX_ITER: 32000
+  CHECKPOINT_PERIOD: 4000
+  WARMUP_ITERS: 10
+# add
+DATALOADER:
+  ASPECT_RATIO_GROUPING: False
+OUTPUT_DIR: "checkpoints_TFA_SGD_new_setting/coco/faster_rcnn/faster_rcnn_R_101_FPN_ft_all_2shot"

@@ -1,0 +1,44 @@
+_BASE_: "../Base-RCNN-FPN.yaml"
+MODEL:
+  # WEIGHTS: "checkpoints/lvis/faster_rcnn/faster_rcnn_R_101_FPN_base_norepeat_cosine/model_reset_remove.pth"
+  WEIGHTS: "checkpoints/lvis/faster_rcnn/faster_rcnn_R_101_FPN_base_norepeat_cos/model_reset_remove.pth"
+  MASK_ON: False
+  RESNETS:
+    DEPTH: 101
+  ROI_HEADS:
+    NUM_CLASSES: 454
+    OUTPUT_LAYER: "CosineSimOutputLayers"
+    SCORE_THRESH_TEST: 0.0001
+    FREEZE_FEAT: True
+  BACKBONE:
+    FREEZE: True
+  PROPOSAL_GENERATOR:
+    FREEZE: True
+INPUT:
+  MIN_SIZE_TRAIN: (640, 672, 704, 736, 768, 800)
+DATASETS:
+  TRAIN: ("lvis_v0.5_train_rare_novel",)
+  TEST: ("lvis_v0.5_val_novel",)
+TEST:
+  DETECTIONS_PER_IMAGE: 300  # LVIS allows up to 300
+# DATALOADER:
+#   SAMPLER_TRAIN: "RepeatFactorTrainingSampler"
+#   REPEAT_THRESHOLD: 0.001
+SOLVER:
+  # BASE_LR: 0.01
+  # STEPS: (15000,)
+  MAX_ITER: 1000
+  CHECKPOINT_PERIOD: 100
+  WARMUP_ITERS: 0
+  # add
+  IMS_PER_BATCH: 8
+  NUM_BATCHES_PER_SET: 2
+# add
+CG_PARAMS:
+  NUM_NEWTON_ITER: 1
+  NUM_CG_ITER: 2
+  INIT_HESSIAN_REG: 0.5
+  HESSIAN_REG_FACTOR: 1.0
+  # AUGMENTATION: True
+
+OUTPUT_DIR: "checkpoints_temp/lvis/faster_rcnn/faster_rcnn_R_101_FPN_fc_novel_cosine_norepeat"

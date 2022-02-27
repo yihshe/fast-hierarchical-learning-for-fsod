@@ -1,0 +1,44 @@
+_BASE_: "../../Base-RCNN-FPN.yaml"
+MODEL:
+  WEIGHTS: "checkpoints/voc/faster_rcnn/faster_rcnn_R_101_FPN_base1/model_reset_surgery_ts.pth"
+  MASK_ON: False
+  RESNETS:
+    DEPTH: 101
+  ROI_HEADS:
+    NAME: "TwoStageROIHeads"
+    NUM_CLASSES: 20
+    NUM_CLASSES_BASE: 15
+    NUM_CLASSES_NOVEL: 5
+    OUTPUT_LAYER: "FastRCNNOutputLayers"
+    FREEZE_FEAT: True
+  BACKBONE:
+    FREEZE: True
+  PROPOSAL_GENERATOR:
+    FREEZE: True
+  PRETRAINED_BASE_MODEL: "checkpoints/voc/faster_rcnn/faster_rcnn_R_101_FPN_base1/model_final.pth"
+INPUT:
+  MIN_SIZE_TRAIN: (480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800)
+  MIN_SIZE_TEST: 800
+DATASETS:
+  TRAIN: ('voc_2007_trainval_all1_10shot',)
+  TEST: ('voc_2007_test_all1',)
+SOLVER:
+  IMS_PER_BATCH: 16
+  IMS_PER_BATCH_FEAT_EXTRACT: 10
+  BASE_LR: 0.001
+  STEPS: (36000,)
+  MAX_ITER: 40000
+  CHECKPOINT_PERIOD: 500
+  WARMUP_ITERS: 0
+DATALOADER:
+  ASPECT_RATIO_GROUPING: False
+CG_PARAMS:
+  NUM_NEWTON_ITER: 40
+  NUM_CG_ITER: 2
+  # TBD determine the hessian reg and factor for voc
+  # INIT_HESSIAN_REG: 0.4
+  # HESSIAN_REG_FACTOR: 0.9
+  # AUGMENTATION: True 
+# TODO change the output_dir later on specifically for CG, with run_experiments.py
+OUTPUT_DIR: "checkpoints_HDA_CG/CG_L2_test/voc/faster_rcnn/faster_rcnn_R_101_FPN_ft_normalized_all1_10shot_randnovel"
+# OUTPUT_DIR: "checkpoints_temp/SGD_L2_modified/voc/exp_3_reg/faster_rcnn/faster_rcnn_R_101_FPN_ft_normalized_all1_1shot_randnovel"

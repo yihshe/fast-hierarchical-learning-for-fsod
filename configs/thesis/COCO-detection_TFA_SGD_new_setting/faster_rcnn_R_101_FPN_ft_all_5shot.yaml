@@ -1,0 +1,31 @@
+DATALOADER:
+  ASPECT_RATIO_GROUPING: false
+DATASETS:
+  TEST: !!python/tuple
+  - coco_test_hda_all
+  TRAIN: !!python/tuple
+  - coco_trainval_hda_all_5shot
+MODEL:
+  BACKBONE:
+    FREEZE: true
+  MASK_ON: false
+  PROPOSAL_GENERATOR:
+    FREEZE: true
+  RESNETS:
+    DEPTH: 101
+  ROI_HEADS:
+    FREEZE_FEAT: true
+    NUM_CLASSES: 80
+    OUTPUT_LAYER: CosineSimOutputLayers
+  WEIGHTS: checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_all/model_reset_surgery_new_setting.pth
+OUTPUT_DIR: ./checkpoints/thesis/checkpoints_TFA_SGD_new_setting/coco/faster_rcnn/faster_rcnn_R_101_FPN_ft_all_5shot
+SOLVER:
+  BASE_LR: 0.001
+  CHECKPOINT_PERIOD: 80000
+  IMS_PER_BATCH: 16
+  IMS_PER_BATCH_FEAT_EXTRACT: 10
+  MAX_ITER: 80000
+  STEPS: !!python/tuple
+  - 72000
+  WARMUP_ITERS: 10
+_BASE_: ../../Base-RCNN-FPN.yaml

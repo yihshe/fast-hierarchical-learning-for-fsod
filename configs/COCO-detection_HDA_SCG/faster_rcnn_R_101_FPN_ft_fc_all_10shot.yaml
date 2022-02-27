@@ -1,0 +1,37 @@
+_BASE_: "../Base-RCNN-FPN.yaml"
+MODEL:
+  WEIGHTS: "checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_all/model_reset_surgery_ts.pth"
+  MASK_ON: False
+  RESNETS:
+    DEPTH: 101
+  ROI_HEADS:
+    NAME: "TwoStageROIHeads"
+    NUM_CLASSES: 80
+    NUM_CLASSES_BASE: 60
+    NUM_CLASSES_NOVEL: 20
+    OUTPUT_LAYER: "FastRCNNOutputLayers"
+    FREEZE_FEAT: True
+  BACKBONE:
+    FREEZE: True
+  PROPOSAL_GENERATOR:
+    FREEZE: True
+DATASETS:
+  TRAIN: ('coco_trainval_all_10shot',)
+  TEST: ('coco_test_all',)
+SOLVER:
+  IMS_PER_BATCH: 8
+  NUM_BATCHES_PER_SET: 2
+  IMS_PER_BATCH_FEAT_EXTRACT: 10
+  MAX_ITER: 16000
+  CHECKPOINT_PERIOD: 1000
+# add
+# DATALOADER:
+#   ASPECT_RATIO_GROUPING: False
+# add
+CG_PARAMS:
+  NUM_NEWTON_ITER: 30
+  NUM_CG_ITER: 2
+  INIT_HESSIAN_REG: 0.4
+  HESSIAN_REG_FACTOR: 0.9
+  # AUGMENTATION: True 
+OUTPUT_DIR: "checkpoints_HDA_CG/coco/faster_rcnn/faster_rcnn_R_101_FPN_ft_all_10shot"

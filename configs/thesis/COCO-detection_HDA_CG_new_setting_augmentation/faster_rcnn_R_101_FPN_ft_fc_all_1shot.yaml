@@ -1,0 +1,43 @@
+_BASE_: "../../Base-RCNN-FPN.yaml"
+MODEL:
+  WEIGHTS: "checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_all/model_reset_surgery_ts_new_setting_bbox.pth"
+  MASK_ON: False
+  RESNETS:
+    DEPTH: 101
+  ROI_HEADS:
+    NAME: "HDAROIHeads"
+    NUM_CLASSES: 80
+    NUM_CLASSES_HIER1: 42
+    NUM_CLASSES_HIER2_FG: 60
+    NUM_CLASSES_HIER2_BG: 20
+    NUM_CLASSES_HIER2_FG_ANIMAL: 10
+    NUM_CLASSES_HIER2_FG_FOOD: 10
+    OUTPUT_LAYER: "FastRCNNOutputLayers"
+    FREEZE_FEAT: True
+  BACKBONE:
+    FREEZE: True
+  PROPOSAL_GENERATOR:
+    FREEZE: True
+DATASETS:
+  TRAIN: ('coco_trainval_hda_all_1shot',)
+  TEST: ('coco_test_hda_all',)
+SOLVER:
+  IMS_PER_BATCH: 16
+  # add
+  IMS_PER_BATCH_FEAT_EXTRACT: 10
+  BASE_LR: 0.001
+  STEPS: (14400,)
+  MAX_ITER: 16000
+  CHECKPOINT_PERIOD: 1000
+  WARMUP_ITERS: 10
+# add
+DATALOADER:
+  ASPECT_RATIO_GROUPING: False
+# add
+CG_PARAMS:
+  NUM_NEWTON_ITER: 40
+  NUM_CG_ITER: 2
+  INIT_HESSIAN_REG: 0.4
+  HESSIAN_REG_FACTOR: 0.9
+  AUGMENTATION: True 
+OUTPUT_DIR: "checkpoints/thesis/checkpoints_HDA_CG_new_setting_augmentation/coco/faster_rcnn/faster_rcnn_R_101_FPN_ft_fc_all_1shot"
