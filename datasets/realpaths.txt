@@ -1,4 +1,4 @@
-# data folders of symbolic links and their real path
+# data folders of symbolic links under datasets and their real paths
 # datasets/coco/
 /srv/beegfs02/scratch/visobt4s/data/tracking_datasets/coco
 
