@@ -230,13 +230,13 @@ def main(args):
         else:
             res = Trainer.test(cfg, model)
 
-        setting = "_new_setting" if args.results_path is not None else ""
-
+        # setting = "_new_setting" if args.results_path is not None else ""
+        setting = ""
         if comm.is_main_process():
             verify_results(cfg, res)
             # save evaluation results in json
             os.makedirs(
-                os.path.join(cfg.OUTPUT_DIR, "inference", exist_ok=True)
+                os.path.join(cfg.OUTPUT_DIR, "inference"), exist_ok=True
             )
             with open(
                 os.path.join(cfg.OUTPUT_DIR, "inference", "res_final{}.json".format(setting)),

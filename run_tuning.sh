@@ -96,3 +96,39 @@ conda activate pytcu10
 #         --opts MODEL.WEIGHTS checkpoints/voc/faster_rcnn/faster_rcnn_R_101_FPN_ft_normalized_all1_5shot_randnovel/model_final.pth \
 #                OUTPUT_DIR checkpoints/voc/faster_rcnn/faster_rcnn_R_101_FPN_ft_normalized_all1_5shot_randnovel
 
+# python3 -m tools.tune_net --num-gpus 1\
+#         --config-file configs/COCO-detection_HDA_SCG/faster_rcnn_R_101_FPN_ft_fc_all_10shot.yaml \
+#         --SCGTrainer \
+#         --opts MODEL.WEIGHTS checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_all/model_reset_surgery_ts.pth \
+#                SOLVER.MAX_ITER 300 SOLVER.CHECKPOINT_PERIOD 100 SOLVER.IMS_PER_BATCH 8 SOLVER.NUM_BATCHES_PER_SET 2 \
+#                CG_PARAMS.NUM_NEWTON_ITER 1 CG_PARAMS.NUM_CG_ITER 2 \
+#                CG_PARAMS.INIT_HESSIAN_REG 0.5 CG_PARAMS.HESSIAN_REG_FACTOR 1.0 CG_PARAMS.AUGMENTATION True \
+#                OUTPUT_DIR checkpoints_temp/coco_hda_scg/faster_rcnn/faster_rcnn_R_101_FPN_ft_all_10shot_aug
+
+# python3 -m tools.test_net --num-gpus 1 \
+#         --config-file configs/COCO-detection_HDA_SCG/faster_rcnn_R_101_FPN_ft_fc_all_10shot.yaml \
+#         --eval-all \
+#         --opts OUTPUT_DIR checkpoints_temp/coco_hda_scg/faster_rcnn/faster_rcnn_R_101_FPN_ft_all_10shot_aug
+
+# python3 -m tools.train_net_modified --num-gpus 1 \
+#         --config-file configs/COCO-detection_TFA_SGD/faster_rcnn_R_101_FPN_ft_all_5shot.yaml \
+#         --opts MODEL.WEIGHTS checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_all/model_reset_surgery.pth \
+#                SOLVER.MAX_ITER 80000 SOLVER.CHECKPOINT_PERIOD 10000 SOLVER.IMS_PER_BATCH_FEAT_EXTRACT 10 \
+#                OUTPUT_DIR checkpoints_temp/coco_tfa_sgd/faster_rcnn/faster_rcnn_R_101_FPN_ft_all_5shot
+
+# python3 -m tools.train_net_modified --num-gpus 1 \
+#         --config-file configs/COCO-detection_TFA_SGD/faster_rcnn_R_101_FPN_ft_all_10shot.yaml \
+#         --opts MODEL.WEIGHTS checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_all/model_reset_surgery.pth \
+#                SOLVER.MAX_ITER 160000 SOLVER.CHECKPOINT_PERIOD 20000 SOLVER.IMS_PER_BATCH_FEAT_EXTRACT 10 \
+#                OUTPUT_DIR checkpoints_temp/coco_tfa_sgd/faster_rcnn/faster_rcnn_R_101_FPN_ft_all_10shot
+
+# python3 -m tools.test_net --num-gpus 1 \
+#         --config-file configs/COCO-detection_TFA_SGD/faster_rcnn_R_101_FPN_ft_all_5shot.yaml \
+#         --eval-all \
+#         --opts OUTPUT_DIR checkpoints_temp/coco_tfa_sgd/faster_rcnn/faster_rcnn_R_101_FPN_ft_all_5shot
+
+# python3 -m tools.test_net --num-gpus 1 \
+#         --config-file configs/COCO-detection_TFA_SGD/faster_rcnn_R_101_FPN_ft_all_10shot.yaml \
+#         --eval-all \
+#         --opts OUTPUT_DIR checkpoints_temp/coco_tfa_sgd/faster_rcnn/faster_rcnn_R_101_FPN_ft_all_10shot
+

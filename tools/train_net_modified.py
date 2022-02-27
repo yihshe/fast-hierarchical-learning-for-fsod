@@ -118,8 +118,8 @@ class Trainer(DefaultTrainer):
 
         # Do evaluation after checkpointer, because then if it fails,
         # we can use the saved checkpoint to debug.
-        ret.append(EvalHookFsdet(
-            cfg.TEST.EVAL_PERIOD, test_and_save_results, self.cfg))
+        # ret.append(EvalHookFsdet(
+        #     cfg.TEST.EVAL_PERIOD, test_and_save_results, self.cfg))
 
         if comm.is_main_process():
             # run writers in the end, so that evaluation metrics are written
@@ -146,10 +146,10 @@ class Trainer(DefaultTrainer):
             proposals, box_features = self.extract_features(self.model, self.data_loader_before)
             
             # NOTE the following code is in test
-            for i in range(4):
-                proposals_plus, box_features_plus = self.extract_features(self.model, self.data_loader_before)
-                proposals = [*proposals, *proposals_plus]
-                box_features = torch.cat((box_features, box_features_plus), dim=0)
+            # for i in range(4):
+            #     proposals_plus, box_features_plus = self.extract_features(self.model, self.data_loader_before)
+            #     proposals = [*proposals, *proposals_plus]
+            #     box_features = torch.cat((box_features, box_features_plus), dim=0)
             
             extract_time = time.perf_counter()-start
             logger.info("Extracted features from frozen layers. Time needed: {}".format(extract_time))

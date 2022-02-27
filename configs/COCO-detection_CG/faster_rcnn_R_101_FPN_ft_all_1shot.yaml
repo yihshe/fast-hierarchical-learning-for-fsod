@@ -24,32 +24,29 @@ MODEL:
   PROPOSAL_GENERATOR:
     FREEZE: True
   #add
-  PRETRAINED_BASE_MODEL: "checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_base/model_final.pth"
+  # PRETRAINED_BASE_MODEL: "checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_base/model_final.pth"
 DATASETS:
-  TRAIN: ('coco_trainval_all_10shot',)
+  TRAIN: ('coco_trainval_all_1shot',)
   TEST: ('coco_test_all',)
 SOLVER:
-  IMS_PER_BATCH: 10
-  NUM_BATCHES_PER_SET: 2
+  IMS_PER_BATCH: 16
+  # NUM_BATCHES_PER_SET: 2
   # add
   # IMS_PER_BATCH_FEAT_EXTRACT: 10
-  # BASE_LR: 0.001
-  BASE_LR: 0.01
+  BASE_LR: 0.001
   STEPS: (14400,)
-  # MAX_ITER: 16000
-  # CHECKPOINT_PERIOD: 1000
-  MAX_ITER: 100
-  CHECKPOINT_PERIOD: 10
+  MAX_ITER: 16000
+  CHECKPOINT_PERIOD: 1000
   WARMUP_ITERS: 0
 # add
 # DATALOADER:
-#   ASPECT_RATIO_GROUPING: False
+  # ASPECT_RATIO_GROUPING: False
 # add
 CG_PARAMS:
-  NUM_NEWTON_ITER: 1
+  NUM_NEWTON_ITER: 30
   NUM_CG_ITER: 2
-  # INIT_HESSIAN_REG: 0.4
-  # HESSIAN_REG_FACTOR: 0.9
+  INIT_HESSIAN_REG: 0.4
+  HESSIAN_REG_FACTOR: 0.9
   # AUGMENTATION: True
   # REGULARIZATION_TYPE: 'feature wise'
   # LOSS_VEC_REG_PATH: 'checkpoints_temp/CG_L2_meta_weight_retrained/coco_meta_weight_regvec_std1e-1_iter1000_lr1e-2/faster_rcnn_R_101_FPN_ft_all_1shot/lambda_params_iter999.pt'

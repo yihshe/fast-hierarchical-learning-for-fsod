@@ -349,7 +349,7 @@ class DetectionNewtonCG(ConjugateGradientBase):
         self.x += delta_x
         
         self.model_update()
-        print('{} loss update: {}'.format(self.super_cat, list(loss_dict.values())[0]), 'step norm: {}'.format([torch.sum(torch.square(delta_x[0])), torch.sum(torch.square(delta_x[1]))]))
+        # print('{} loss update: {}'.format(self.super_cat, list(loss_dict.values())[0]), 'step norm: {}'.format([torch.sum(torch.square(delta_x[0])), torch.sum(torch.square(delta_x[1]))]))
         # embed()
         
         if self.debug:

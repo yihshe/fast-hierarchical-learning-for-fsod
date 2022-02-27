@@ -12,21 +12,21 @@ MODEL:
     FREEZE: True
   PROPOSAL_GENERATOR:
     FREEZE: True
-  PRETRAINED_BASE_MODEL: "checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_base/model_final.pth"
+  # PRETRAINED_BASE_MODEL: "checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_base/model_final.pth"
 DATASETS:
   TRAIN: ('coco_trainval_all_5shot',)
   TEST: ('coco_test_all',)
 SOLVER:
   IMS_PER_BATCH: 16
-  IMS_PER_BATCH_FEAT_EXTRACT: 10
+  # IMS_PER_BATCH_FEAT_EXTRACT: 10
   BASE_LR: 0.001
   STEPS: (72000,)
   MAX_ITER: 80000
   # CHECKPOINT_PERIOD: 4000
   CHECKPOINT_PERIOD: 50
   WARMUP_ITERS: 10
-DATALOADER:
-  ASPECT_RATIO_GROUPING: False
+# DATALOADER:
+#   ASPECT_RATIO_GROUPING: False
 CG_PARAMS:
   NUM_NEWTON_ITER: 400
   NUM_CG_ITER: 2

@@ -85,52 +85,103 @@ def main(args):
             num_ckpts += 1
         else:
             print('Missing: {}'.format(ckpt))
-    print('Num ckpts: {}'.format(num_ckpts))
-    print('')
+    # print('Num ckpts: {}'.format(num_ckpts))
+    # print('')
 
     # TODO new setting or not
     save_dir = '{}/{}/faster_rcnn/aggregated_results{}'.format(args.ckpt_path_prefix, dataset, new_setting)
+    
+    metrics_to_count = ['AP', 'AP50', 'AP75', 'bAP', 'bAP50', 'bAP75', 'aAP', 'aAP50', 'aAP75', 'fAP', 'fAP50', 'fAP75', 'nAP', 'nAP50', 'nAP75']
+
+    
     # Output results
     if args.print:
         # Clean output for copy and pasting
+        # NOTE print a list of AP names to statistic
         out_str = ''
         for metric in metrics:
-            if metric in ['AP', 'bAP', 'aAP', 'fAP', 'nAP']:
+            if metric in metrics_to_count:
+                out_str += '&{} '.format(metric)
+        if args.shots == 1:
+            print(out_str)
+        
+        # NOTE print mean of APs
+        means = []
+        for metric in metrics:
+            if metric in metrics_to_count:
+                means.append('{0:.1f}'.format(np.mean(metrics[metric])))
+        # print(means)
+        
+        # NOTE print CI of APs
+        cis = []
+        for metric in metrics:
+            if metric in metrics_to_count:
+                cis.append('{0:.1f}'.format(
+                    1.96*np.std(metrics[metric]) / math.sqrt(len(metrics[metric]))
+                ))
+        # print(cis)
+        
+        output_row = ""
+        for mean, ci in zip(means, cis):
+            unit = "&{}$\pm${} ".format(mean, ci)
+            output_row+=unit
+        output_row += " \\\\"
+        print(output_row)
+
+        """
+        # Clean output for copy and pasting
+        # NOTE print a list of AP names to statistic
+        out_str = ''
+        for metric in metrics:
+            if metric in metrics_to_count:
                 out_str += '{} '.format(metric)
         print(out_str)
-
+        
+        # NOTE print mean of APs
         out_str = ''
         for metric in metrics:
-            if metric in ['AP', 'bAP', 'aAP', 'fAP', 'nAP']:
+            if metric in metrics_to_count:
                 out_str += '{0:.1f} '.format(np.mean(metrics[metric]))
         print(out_str)
+        
+        # NOTE print CI of APs
         out_str = ''
         for metric in metrics:
-            if metric in ['AP', 'bAP', 'aAP', 'fAP', 'nAP']:
+            if metric in metrics_to_count:
                 out_str += '{0:.1f} '.format(
                     1.96*np.std(metrics[metric]) / math.sqrt(len(metrics[metric]))
                 )
         print(out_str)
+        
+        # NOTE print std of APs
         out_str = ''
         for metric in metrics:
-            if metric in ['AP', 'bAP', 'aAP', 'fAP', 'nAP']:
+            if metric in metrics_to_count:
                 out_str += '{0:.1f} '.format(np.std(metrics[metric]))
         print(out_str)
+        
+        # NOTE print p25 of APs
         out_str = ''
         for metric in metrics:
-            if metric in ['AP', 'bAP', 'aAP', 'fAP', 'nAP']:
+            if metric in metrics_to_count:
                 out_str += '{0:.1f} '.format(np.percentile(metrics[metric], 25))
         print(out_str)
+        
+        # NOTE print p50 of APs
         out_str = ''
         for metric in metrics:
-            if metric in ['AP', 'bAP', 'aAP', 'fAP', 'nAP']:
+            if metric in metrics_to_count:
                 out_str += '{0:.1f} '.format(np.percentile(metrics[metric], 50))
         print(out_str)
+        
+        # NOTE print p75 of APs
         out_str = ''
         for metric in metrics:
-            if metric in ['AP', 'bAP', 'aAP', 'fAP', 'nAP']:
+            if metric in metrics_to_count:
                 out_str += '{0:.1f} '.format(np.percentile(metrics[metric], 75))
         print(out_str)
+        """
+        
     else:
         # Verbose output
         res = {}

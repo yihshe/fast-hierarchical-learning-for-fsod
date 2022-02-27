@@ -97,8 +97,8 @@ class CGTrainer(TrainerBase):
         
         # define variables used for masking out gradients for pretrained weights
         data_source = cfg.DATASETS.TRAIN[0].split('_')[0]
-        base_model = torch.load(cfg.MODEL.PRETRAINED_BASE_MODEL)
-        self.base_params = base_model['model']
+        # base_model = torch.load(cfg.MODEL.PRETRAINED_BASE_MODEL)
+        # self.base_params = base_model['model']
 
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -121,8 +121,8 @@ class CGTrainer(TrainerBase):
         # NOTE for TFA
         # self.mask = mask_generator.create_mask(self.model.state_dict(), self.base_params)
         # NOTE for HDA, which does not use regularization
-        # self.mask = None
-        self.mask = mask_generator.create_mask(self.model.state_dict(), self.base_params) if cfg.CG_PARAMS.REGULARIZATION_TYPE is not None else None
+        self.mask = None
+        # self.mask = mask_generator.create_mask(self.model.state_dict(), self.base_params) if cfg.CG_PARAMS.REGULARIZATION_TYPE is not None else None
         
         self.NOVEL_CLASSES = mask_generator.NOVEL_CLASSES
         self.IDMAP = mask_generator.IDMAP
@@ -245,8 +245,8 @@ class CGTrainer(TrainerBase):
 
         # Do evaluation after checkpointer, because then if it fails,
         # we can use the saved checkpoint to debug.
-        ret.append(EvalHookFsdet(
-            cfg.TEST.EVAL_PERIOD, test_and_save_results, self.cfg))
+        # ret.append(EvalHookFsdet(
+        #     cfg.TEST.EVAL_PERIOD, test_and_save_results, self.cfg))
 
         if comm.is_main_process():
             # run writers in the end, so that evaluation metrics are written
@@ -311,13 +311,17 @@ class CGTrainer(TrainerBase):
                 novel_init_weights = self.weight_predictor(novel_gt_box_features)
 
             else:
-                proposals, box_features = self.extract_features()
+                proposals, box_features, pred, true = self.extract_features()
+                pred_vs_true = {"pred": pred.cpu(), "true": true.cpu()}
+                torch.save(pred_vs_true, os.path.join(self.cfg.OUTPUT_DIR, "pred_vs_true_10shot_standard_setting.pth"))
+                print("std setting saved")
+                embed()
                 novel_init_weights = None
 
                 if self.feature_projector is not None:
                     box_features = self.feature_projector(box_features)
                     box_features.detach_()
-                    
+                
             extract_time = time.perf_counter()-start
             logger.info("Extracted features from frozen layers. Time needed: {}".format(extract_time))
 
@@ -332,7 +336,8 @@ class CGTrainer(TrainerBase):
             self.problem = DetectionLossProblem(proposals, box_features, 
                                                 regularization = self.cfg.CG_PARAMS.REGULARIZATION_TYPE, 
                                                 mask = self.mask, 
-                                                base_params = copy.deepcopy(self.base_params), 
+                                                # base_params = copy.deepcopy(self.base_params), 
+                                                base_params = None,
                                                 reg = self.loss_reg,
                                                 augmentation = self.cfg.CG_PARAMS.AUGMENTATION,
                                                 bg_class_id = self.cfg.MODEL.ROI_HEADS.NUM_CLASSES_NOVEL,
@@ -388,12 +393,15 @@ class CGTrainer(TrainerBase):
         if not extract_gt_box_features:
             for batch_idx, data in enumerate(self.data_loader):
                 if batch_idx == 0:
-                    proposals, box_features = self.model.extract_features(data)
+                    proposals, box_features, pred, true = self.model.extract_features(data)
                 else:
-                    proposals_batch, box_features_batch = self.model.extract_features(data)
+                    proposals_batch, box_features_batch, pred_batch, true_batch = self.model.extract_features(data)
                     proposals = [*proposals, *proposals_batch]
                     box_features = torch.cat((box_features, box_features_batch), dim=0)
-            return proposals, box_features
+                    
+                    pred = torch.cat((pred, pred_batch))
+                    true = torch.cat((true, true_batch))
+            return proposals, box_features, pred, true
         else:
             for batch_idx, data in enumerate(self.data_loader):
                 if batch_idx == 0:

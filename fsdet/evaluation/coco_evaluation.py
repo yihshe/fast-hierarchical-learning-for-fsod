@@ -286,7 +286,8 @@ class COCOEvaluator(DatasetEvaluator):
 
     def evaluate_with_saved_results(self, results_path):
         self._results = OrderedDict()
-        self._eval_predictions_with_saved_results(results_path)
+        self._eval_predictions_with_saved_results2(results_path)
+        # self._eval_predictions_with_saved_results(results_path)
         # Copy so the caller can do whatever with results
         return copy.deepcopy(self._results)
 
@@ -370,6 +371,64 @@ class COCOEvaluator(DatasetEvaluator):
                     self._results["bbox"]["AP"] = self._results["bbox"]["fAP"]
                 else:
                     self._results["bbox"]["AP"] = self._results["bbox"]["bAP"]
+        else:
+            coco_eval = (
+                _evaluate_predictions_on_coco(
+                    self._coco_api, self._coco_results, "bbox",
+                )
+                if len(self._coco_results) > 0
+                else None  # cocoapi does not handle empty results very well
+            )
+            res = self._derive_coco_results(
+                coco_eval, "bbox",
+                class_names=self._metadata.get("thing_classes")
+            )
+            self._results["bbox"] = res
+
+    def _eval_predictions_with_saved_results2(self, results_path):
+        self._coco_results = json.load(open(results_path))
+        if not self._do_evaluation:
+            self._logger.info("Annotations are not available for evaluation.")
+            return
+
+        self._logger.info("Evaluating predictions ...")
+        if self._is_splits:
+            self._results["bbox"] = {}
+            for split, classes, names in [
+                    ("all", None, self._metadata.get("thing_classes")),
+                    ("base", self._base_classes, self._metadata.get("base_classes")),
+                    ("novel", self._novel_classes, self._metadata.get("novel_classes"))]:
+                if "all" not in self._dataset_name and \
+                        split not in self._dataset_name:
+                    continue
+                coco_eval = (
+                    _evaluate_predictions_on_coco(
+                        self._coco_api, self._coco_results, "bbox", classes,
+                    )
+                    if len(self._coco_results) > 0
+                    else None  # cocoapi does not handle empty results very well
+                )
+                res_ = self._derive_coco_results(
+                    coco_eval, "bbox", class_names=names,
+                )
+                res = {}
+                for metric in res_.keys():
+                    if len(metric) <= 4:
+                        if split == "all":
+                            res[metric] = res_[metric]
+                        elif split == "base":
+                            res["b"+metric] = res_[metric]
+                        elif split == "novel":
+                            res["n"+metric] = res_[metric]
+                self._results["bbox"].update(res)
+
+            # add "AP" if not already in
+            if "AP" not in self._results["bbox"]:
+                if "nAP" in self._results["bbox"]:
+                    self._results["bbox"]["AP"] = self._results["bbox"]["nAP"]
+                else:
+                    self._results["bbox"]["AP"] = self._results["bbox"]["bAP"]
+        
         else:
             coco_eval = (
                 _evaluate_predictions_on_coco(

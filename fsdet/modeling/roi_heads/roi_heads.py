@@ -865,7 +865,7 @@ class TwoStageROIHeads(ROIHeads):
             for i, pred_class in enumerate(instance_novel.pred_classes.cpu().numpy()):
                 pred_classes_mapped_novel[i] = idmap_global[idmap_novel_reversed[pred_class]]
             
-            instance.pred_classes = torch.cat((pred_classes_mapped_base, pred_classes_mapped_novel))
+            instance.pred_classes = torch.cat((pred_classes_mapped_base, pred_classes_mapped_novel)).int()
             # NOTE gt
             if instance_base.has("gt_classes"):
                 instance.gt_classes = torch.cat((instance_base.gt_classes, instance_novel.gt_classes))
@@ -908,7 +908,6 @@ class TwoStageROIHeads(ROIHeads):
         # scores = F.softmax(pred_class_logits_base,dim=-1)
         # filter_mask = scores > 0.5
         # filter_inds = filter_mask.nonzero()
-        
         # obj_inds = set(filter_inds[:,0].unique().cpu().tolist())
         # bg_score_max_bool_list = torch.tensor([i in obj_inds for i in range(pred_class_logits_base.shape[0])]).split(num_preds_per_image, dim=0)
 
@@ -917,9 +916,11 @@ class TwoStageROIHeads(ROIHeads):
         # NOTE HDA here we filter the proposals for animal, food, and background
         for i, (fg_inds_local, proposal, num_preds, bg_score_max_bool) in enumerate(zip(fg_inds_local_list, proposals, num_preds_per_image, bg_score_max_bool_list)):
 
-            fg_inds_local, _ = fg_inds_local.long().unique().sort()
-            bg_inds_local = torch.tensor([i for i in torch.arange(num_preds).to(self.device)[bg_score_max_bool] if i not in fg_inds_local]).long().to(self.device)
-            
+            # fg_inds_local, _ = fg_inds_local.long().unique().sort()
+            # bg_inds_local = torch.tensor([i for i in torch.arange(num_preds).to(self.device)[bg_score_max_bool] if i not in fg_inds_local]).long().to(self.device)
+            fg_inds_local = set(fg_inds_local.unique().cpu().tolist())
+            bg_inds_local = torch.tensor([i for i in torch.arange(num_preds)[bg_score_max_bool.cpu()] if i.item() not in fg_inds_local]).long().to(self.device)
+        
             # given the pred_classes, select the fg_inds and then filter the fg_inds_local, and concatenate to filter the features for prediction
             # fg_inds = torch.cat((fg_inds, torch.sum(num_preds_per_image[:i])+fg_inds_local)).long()
             bg_inds = torch.cat((bg_inds, torch.sum(num_preds_per_image[:i])+bg_inds_local)).long()
@@ -956,13 +957,14 @@ class TwoStageROIHeads(ROIHeads):
                 bg_class_id_global = self.num_classes_base+self.num_classes_novel
                 bg_class_id_local = self.num_classes_novel if novel is True else self.num_classes_base
                 other_class_ids_global = self.idmaps['base_class_ids_global'] if novel is True else self.idmaps['novel_class_ids_global']
-                other_class_ids_global = list(other_class_ids_global) + [bg_class_id_global]
+                other_class_ids_global = set(list(other_class_ids_global) + [bg_class_id_global])
 
                 gt_classes_filtered = proposal.gt_classes[inds]
                 gt_classes_mapped = torch.zeros(gt_classes_filtered.shape).to(self.device)
                 for i, gt_class in enumerate(gt_classes_filtered.cpu().numpy()):
                     gt_classes_mapped[i] = bg_class_id_local if gt_class in other_class_ids_global else idmap_local[idmap_global_reversed[gt_class]]
-            
+                    # print('gt_class')
+                    # embed()
                 proposal_filtered.gt_classes = gt_classes_mapped.long()
 
         return proposal_filtered
@@ -978,10 +980,10 @@ class TwoStageROIHeads(ROIHeads):
         # del targets
 
         features_list = [features[f] for f in self.in_features]
-        proposals_novel, box_features_novel = self._extract_features_box(features_list, proposals)
+        proposals_novel, box_features_novel, pred, true = self._extract_features_box(features_list, proposals)
         if not extract_gt_box_features:
             del targets
-            return proposals_novel, box_features_novel
+            return proposals_novel, box_features_novel, pred, true
         else:
             gt_box_features, gt_classes = self._extract_gt_features_box(features_list, targets)
             del targets
@@ -1017,8 +1019,12 @@ class TwoStageROIHeads(ROIHeads):
         pred_instances_base, bg_inds, proposals_novel = self.detection_filter(proposals, pred_class_logits_base, pred_proposal_deltas_base)
 
         box_features_novel = box_features[bg_inds] if bg_inds.shape[0] != 0 else torch.tensor([]).to(self.device)
-        # embed()
-        return proposals_novel, box_features_novel
+        
+        # NOTE exp for rebuttal
+        pred_classes = pred_class_logits_base.argmax(dim=1)
+        true_classes = torch.cat(tuple(proposal.gt_classes for proposal in proposals))
+        
+        return proposals_novel, box_features_novel, pred_classes, true_classes
 
     # TODO filter the novel classes and only extract the novel classes
     def _extract_gt_features_box(self, features, targets):
@@ -1451,6 +1457,7 @@ class HDAROIHeads(ROIHeads):
             bg_inds_local = torch.tensor([i for i in torch.arange(num_preds).to(self.device)[bg_score_max_bool] if i not in fg_fixed_cats_inds_local]).long().to(self.device)
             if self.training:
                 assert proposal.has('gt_classes')
+                # NOTE here we assume that to filter out proposals that have max score of animal but do not have ground truth id of animal
                 fg_animal_inds_local = torch.tensor([ind for ind in fg_animal_inds_local if proposal.gt_classes[ind] in self.idmaps['hier2_animal_class_ids_global']]).long().to(self.device)
                 fg_food_inds_local = torch.tensor([ind for ind in fg_food_inds_local if proposal.gt_classes[ind] in self.idmaps['hier2_food_class_ids_global']]).long().to(self.device)
 
@@ -1553,6 +1560,7 @@ class HDAROIHeads(ROIHeads):
         )
         box_features = self.box_head(box_features)
 
+        # NOTE from the pred_class_logits we can get the pred class from base detetor for each proposal
         pred_class_logits_base, pred_proposal_deltas_base = self.box_predictor_base(box_features)
         # fg_inds, bg_inds, proposals_base, proposals_novel = self.detection_filter(proposals, pred_class_logits_base, pred_proposal_deltas_base)
         _, fg_animal_inds, fg_food_inds, bg_inds, proposals_animal, proposals_food, proposals_bg = self.detection_filter(
@@ -1562,6 +1570,9 @@ class HDAROIHeads(ROIHeads):
         box_features_food = box_features[fg_food_inds] if fg_food_inds.shape[0] != 0 else torch.tensor([]).to(self.device)
         box_features_bg = box_features[bg_inds] if bg_inds.shape[0] != 0 else torch.tensor([]).to(self.device)
 
+        # NOTE experiment for rebuttal
+        pred_classes = pred_class_logits_base.argmax(dim=1)
+        true_classes = torch.cat(tuple(proposal.gt_classes for proposal in proposals))
         extracted_info = {
             'proposals_animal': proposals_animal,
             'box_features_animal': box_features_animal,
@@ -1569,6 +1580,8 @@ class HDAROIHeads(ROIHeads):
             'box_features_food': box_features_food,
             'proposals_bg': proposals_bg,
             'box_features_bg': box_features_bg,
+            'pred': pred_classes,
+            'true': true_classes,
             }
 
         # print('extracted_info')

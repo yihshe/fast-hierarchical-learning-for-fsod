@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH  --output=sbatch_log/%j.out
-#SBATCH  --gres=gpu:2
+#SBATCH  --gres=gpu:1
 #SBATCH  --mem=30G
 
 source /scratch_net/biwidl13/yihshe/conda/etc/profile.d/conda.sh
@@ -102,18 +102,28 @@ conda activate pytcu10
 #         --eval-all \
 #         --opts OUTPUT_DIR checkpoints_temp/COCO_TFA_SCG/coco/faster_rcnn/faster_rcnn_R_101_FPN_ft_all_10shot_SCG_test_newton1
 
-python3 -m tools.train_net --num-gpus 2 \
-        --config-file configs/PascalVOC-detection/split1/faster_rcnn_R_101_FPN_ft_all1_3shot.yaml \
-        --opts SOLVER.CHECKPOINT_PERIOD 12001 OUTPUT_DIR checkpoints_temp/voc_tfa_sgd_original/faster_rcnn/faster_rcnn_R_101_FPN_ft_normalized_all1_3shot_randnovel_l1
+# python3 -m tools.train_net --num-gpus 2 \
+#         --config-file configs/PascalVOC-detection/split1/faster_rcnn_R_101_FPN_ft_all1_3shot.yaml \
+#         --opts SOLVER.CHECKPOINT_PERIOD 12001 OUTPUT_DIR checkpoints_temp/voc_tfa_sgd_original/faster_rcnn/faster_rcnn_R_101_FPN_ft_normalized_all1_3shot_randnovel_l1
 
-python3 -m tools.train_net --num-gpus 2 \
-        --config-file configs/PascalVOC-detection/split1/faster_rcnn_R_101_FPN_ft_all1_10shot.yaml \
-        --opts SOLVER.CHECKPOINT_PERIOD 40001 OUTPUT_DIR checkpoints_temp/voc_tfa_sgd_original/faster_rcnn/faster_rcnn_R_101_FPN_ft_normalized_all1_10shot_randnovel_l1
+# python3 -m tools.train_net --num-gpus 2 \
+#         --config-file configs/PascalVOC-detection/split1/faster_rcnn_R_101_FPN_ft_all1_10shot.yaml \
+#         --opts SOLVER.CHECKPOINT_PERIOD 40001 OUTPUT_DIR checkpoints_temp/voc_tfa_sgd_original/faster_rcnn/faster_rcnn_R_101_FPN_ft_normalized_all1_10shot_randnovel_l1
 
 # python3 -m tools.test_net --num-gpus 1 \
-#         --config-file configs/COCO-detection_SCG/faster_rcnn_R_101_FPN_ft_all_10shot.yaml \
+#         --config-file configs/thesis/COCO-detection_HDA_SCG/faster_rcnn_R_101_FPN_ft_fc_all_1shot.yaml \
 #         --eval-only \
-#         --opts MODEL.WEIGHTS checkpoints/voc/faster_rcnn/faster_rcnn_R_101_FPN_base1/model_reset_surgery.pth \
-#                OUTPUT_DIR checkpoints_temp/voc_tfa_sgd_original/faster_rcnn/faster_rcnn_R_101_FPN_ft_normalized_all1_5shot_randnovel_test
+#         --results-path checkpoints/thesis/checkpoints_HDA_SCG/coco/faster_rcnn/faster_rcnn_R_101_FPN_ft_fc_all_1shot/inference/coco_instances_results.json \
+#         --opts OUTPUT_DIR checkpoints/thesis/checkpoints_HDA_SCG/coco/faster_rcnn/faster_rcnn_R_101_FPN_ft_fc_all_1shot
 
+# python3 -m tools.train_net_modified --num-gpus 1 \
+#         --config-file configs/COCO-detection_TFA_SGD/faster_rcnn_R_101_FPN_ft_all_1shot.yaml \
+#         --opts MODEL.WEIGHTS checkpoints/coco/faster_rcnn/faster_rcnn_R_101_FPN_all/model_reset_surgery.pth \
+#                SOLVER.MAX_ITER 16000 SOLVER.CHECKPOINT_PERIOD 2000 SOLVER.IMS_PER_BATCH_FEAT_EXTRACT 10 \
+#                OUTPUT_DIR checkpoints_temp/coco_tfa_sgd/faster_rcnn/faster_rcnn_R_101_FPN_ft_all_1shot
+
+# python3 -m tools.test_net --num-gpus 1 \
+#         --config-file configs/COCO-detection_TFA_SGD/faster_rcnn_R_101_FPN_ft_all_1shot.yaml \
+#         --eval-all \
+#         --opts OUTPUT_DIR checkpoints_temp/coco_tfa_sgd/faster_rcnn/faster_rcnn_R_101_FPN_ft_all_1shot
 
